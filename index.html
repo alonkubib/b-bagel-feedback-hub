@@ -727,13 +727,14 @@ function ReportPage({complaints,compliments}){
   const [showCal,setShowCal]=useState(false);
   const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
   const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [location,setLocation]=useState('');
   const prevFrom=new Date(dateFrom.getTime()-(dateTo-dateFrom));const prevTo=new Date(dateFrom.getTime()-1);
-  const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[complaints,dateFrom,dateTo]);
-  const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[compliments,dateFrom,dateTo]);
-  const prevC=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=prevFrom&&d<=prevTo}),[complaints,prevFrom,prevTo]);
-  const prevK=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=prevFrom&&d<=prevTo}),[compliments,prevFrom,prevTo]);
+  const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo&&(!location||c.location===location)}),[complaints,dateFrom,dateTo,location]);
+  const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo&&(!location||c.location===location)}),[compliments,dateFrom,dateTo,location]);
+  const prevC=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=prevFrom&&d<=prevTo&&(!location||c.location===location)}),[complaints,prevFrom,prevTo,location]);
+  const prevK=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=prevFrom&&d<=prevTo&&(!location||c.location===location)}),[compliments,prevFrom,prevTo,location]);
 
-  const locScores=LOCATIONS.map(l=>{
+  const locScores=LOCATIONS.filter(l=>!location||l.name===location).map(l=>{
     const comp=fc.filter(c=>c.location===l.name).length;
     const compl=fk.filter(c=>c.location===l.name).length;
     const total=comp+compl;
@@ -765,9 +766,26 @@ function ReportPage({complaints,compliments}){
         <button className="time-chip" onClick={()=>{setDateFrom(startOfLastMonth());setDateTo(endOfLastMonth())}}>Last Month</button>
         <button className="time-chip" onClick={()=>setShowCal(true)} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
       </div>
+      <div style={{marginBottom:16}}><select className="filter-select" value={location} onChange={e=>setLocation(e.target.value)}><option value="">All Locations</option>{LOCATIONS.map(l=><option key={l.id} value={l.name}>{l.name}</option>)}</select></div>
       {showCal&&<CalendarPicker onClose={()=>setShowCal(false)} onSelect={(s,e)=>{setDateFrom(s);setDateTo(new Date(e.getTime()+86399999))}} initStart={dateFrom} initEnd={dateTo}/>}
       <div className="card" style={{marginBottom:16}}>
-        <div className="chart-title">{I.trophy} Location Score — Best to Worst</div>
+        <div className="chart-title">Improvement Scale — Previous vs Current Period</div>
+        <div className="text-xs text-muted mb-3">Comparing {fmt(prevFrom)} – {fmt(prevTo)} → {fmt(dateFrom)} – {fmt(dateTo)}</div>
+        <div style={{display:'grid',gap:12,gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))'}}>
+          {[{label:'Total Complaints',cur:fc.length,prev:prevC.length,good:'down'},{label:'Total Compliments',cur:fk.length,prev:prevK.length,good:'up'},{label:'Urgent Issues',cur:fc.filter(c=>flagReview(c.info)==='urgent').length,prev:prevC.filter(c=>flagReview(c.info)==='urgent').length,good:'down'},{label:'Satisfaction',cur:fc.length+fk.length?Math.round(fk.length/(fc.length+fk.length)*100):0,prev:prevC.length+prevK.length?Math.round(prevK.length/(prevC.length+prevK.length)*100):0,good:'up',pct:true}].map(m=>{
+            const diff=m.cur-m.prev;const isGood=(m.good==='up'&&diff>0)||(m.good==='down'&&diff<0);
+            return <div key={m.label} style={{padding:14,background:'var(--surface2)',borderRadius:'var(--r-sm)',textAlign:'center'}}>
+              <div className="text-xs font-bold text-muted" style={{marginBottom:6}}>{m.label}</div>
+              <div style={{fontSize:22,fontWeight:800}}>{m.cur}{m.pct?'%':''}</div>
+              <div className="text-xs" style={{color:isGood?'var(--green)':diff===0?'var(--text3)':'var(--red)',fontWeight:600,marginTop:4,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}>
+                {diff>0?'↑':'↓'}{Math.abs(diff)}{m.pct?'%':''} <span className="text-light">was {m.prev}{m.pct?'%':''}</span>
+              </div>
+            </div>
+          })}
+        </div>
+      </div>
+      <div className="card" style={{marginBottom:16}}>
+        <div className="chart-title">Location Score — Best to Worst</div>
         <div className="text-xs text-muted mb-3">Score = % positive feedback out of total</div>
         {locScores.map((l,i)=><div key={l.id} className="rank-row">
           <div className={`rank-num ${i===0?'gold':i===1?'silver':i===2?'bronze':''}`}>{i+1}</div>
@@ -802,8 +820,8 @@ function ReportPage({complaints,compliments}){
           })}
         </div>
       </div>
-      <div className="card" style={{marginBottom:16}}>
-        <div className="chart-title">{I.bolt} Suggested Actions for Improvement</div>
+      <div className="card">
+        <div className="chart-title">Suggested Actions for Improvement</div>
         {suggestions.map((s,i)=><div key={i} style={{padding:14,background:'var(--surface2)',borderRadius:'var(--r-sm)',marginBottom:10,borderLeft:'3px solid '+(s.prio==='High'?'var(--red)':s.prio==='Medium'?'var(--amber)':'var(--blue)')}}>
           <div className="flex items-center gap-2 mb-2">
             <span className="badge" style={{background:s.prio==='High'?'var(--red-soft)':s.prio==='Medium'?'var(--amber-soft)':'var(--blue-soft)',color:s.prio==='High'?'var(--red)':s.prio==='Medium'?'var(--amber)':'var(--blue)'}}>{s.prio}</span>
@@ -811,22 +829,6 @@ function ReportPage({complaints,compliments}){
           </div>
           <div className="text-sm">{s.text}</div>
         </div>)}
-      </div>
-      <div className="card">
-        <div className="chart-title">Improvement Scale — Previous vs Current Period</div>
-        <div className="text-xs text-muted mb-3">Comparing {fmt(prevFrom)} – {fmt(prevTo)} → {fmt(dateFrom)} – {fmt(dateTo)}</div>
-        <div style={{display:'grid',gap:12,gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))'}}>
-          {[{label:'Total Complaints',cur:fc.length,prev:prevC.length,good:'down'},{label:'Total Compliments',cur:fk.length,prev:prevK.length,good:'up'},{label:'Urgent Issues',cur:fc.filter(c=>flagReview(c.info)==='urgent').length,prev:prevC.filter(c=>flagReview(c.info)==='urgent').length,good:'down'},{label:'Satisfaction',cur:fc.length+fk.length?Math.round(fk.length/(fc.length+fk.length)*100):0,prev:prevC.length+prevK.length?Math.round(prevK.length/(prevC.length+prevK.length)*100):0,good:'up',pct:true}].map(m=>{
-            const diff=m.cur-m.prev;const isGood=(m.good==='up'&&diff>0)||(m.good==='down'&&diff<0);
-            return <div key={m.label} style={{padding:14,background:'var(--surface2)',borderRadius:'var(--r-sm)',textAlign:'center'}}>
-              <div className="text-xs font-bold text-muted" style={{marginBottom:6}}>{m.label}</div>
-              <div style={{fontSize:22,fontWeight:800}}>{m.cur}{m.pct?'%':''}</div>
-              <div className="text-xs" style={{color:isGood?'var(--green)':diff===0?'var(--text3)':'var(--red)',fontWeight:600,marginTop:4,display:'flex',alignItems:'center',justifyContent:'center',gap:4}}>
-                {diff>0?'↑':'↓'}{Math.abs(diff)}{m.pct?'%':''} <span className="text-light">was {m.prev}{m.pct?'%':''}</span>
-              </div>
-            </div>
-          })}
-        </div>
       </div>
     </div>
   );
