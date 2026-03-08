@@ -95,6 +95,7 @@ a{text-decoration:none;color:inherit}
 .suggestion-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--amber);margin-bottom:4px;display:flex;align-items:center;gap:5px}
 .suggestion-text{font-size:12px;color:var(--text2);line-height:1.5;margin-bottom:10px}
 .suggestion-actions{display:flex;flex-wrap:wrap;gap:6px}
+@media(max-width:767px){.suggestion-area{display:none}}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 18px;border-radius:var(--r-full);font-size:13px;font-weight:600;transition:var(--t);white-space:nowrap}
 .btn-primary{background:var(--red);color:#fff}.btn-primary:hover{background:var(--red-dark)}
 .btn-secondary{background:var(--surface);border:1px solid var(--border);color:var(--text)}.btn-secondary:hover{border-color:var(--border2);background:var(--surface2)}
@@ -365,6 +366,8 @@ function parseDate(str){if(!str)return null;const parts=str.split(/[-\/]/);if(pa
 function fmt(d){if(!d)return'';return d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}
 function fmtTime(d){if(!d)return'';return d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}
 function daysAgo(n){const d=new Date();d.setDate(d.getDate()-n);d.setHours(0,0,0,0);return d}
+function lastWeekStart(){const d=new Date();const day=d.getDay();const diff=day===0?6:day-1;d.setDate(d.getDate()-diff-7);d.setHours(0,0,0,0);return d}
+function lastWeekEnd(){const d=lastWeekStart();d.setDate(d.getDate()+6);d.setHours(23,59,59,999);return d}
 function startOfMonth(){const d=new Date();d.setDate(1);d.setHours(0,0,0,0);return d}
 function startOfLastMonth(){const d=new Date();d.setMonth(d.getMonth()-1);d.setDate(1);d.setHours(0,0,0,0);return d}
 function endOfLastMonth(){const d=new Date();d.setDate(0);d.setHours(23,59,59,999);return d}
@@ -575,7 +578,7 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
       {item.customer_name&&<div className="review-customer">👤 {item.customer_name}</div>}
 
       {/* Action area */}
-      <div style={{marginTop:12,padding:14,background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:'var(--r-sm)'}}>
+      <div className="suggestion-area" style={{marginTop:12,padding:14,background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:'var(--r-sm)'}}>
         {!cardState.status&&<>
           <div className="suggestion-label">{I.bolt} Suggested Action</div>
           <div className="suggestion-actions">
@@ -606,9 +609,9 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
 /* ═══ DASHBOARD ═══ */
 function DashboardPage({complaints,compliments,onNavigate}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>daysAgo(7));
-  const [dateTo,setDateTo]=useState(()=>new Date());
-  const [timePeriod,setTimePeriod]=useState('7d');
+  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
+  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [timePeriod,setTimePeriod]=useState('lastweek');
   const setTime=(key,from,to)=>{setTimePeriod(key);setDateFrom(from);setDateTo(to)};
   const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[complaints,dateFrom,dateTo]);
   const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[compliments,dateFrom,dateTo]);
@@ -633,7 +636,7 @@ function DashboardPage({complaints,compliments,onNavigate}){
     <div>
       <div className="page-header"><h2>Dashboard</h2><p>{fmt(dateFrom)} – {fmt(dateTo)}</p></div>
       <div className="time-bar">
-        <button className={`time-chip ${timePeriod==='7d'?'active':''}`} onClick={()=>setTime('7d',daysAgo(7),new Date())}>Last 7 Days</button>
+        <button className={`time-chip ${timePeriod==='lastweek'?'active':''}`} onClick={()=>setTime('lastweek',lastWeekStart(),lastWeekEnd())}>Last Week</button>
         <button className={`time-chip ${timePeriod==='30d'?'active':''}`} onClick={()=>setTime('30d',daysAgo(30),new Date())}>Last 30 Days</button>
         <button className={`time-chip ${timePeriod==='month'?'active':''}`} onClick={()=>setTime('month',startOfMonth(),new Date())}>This Month</button>
         <button className={`time-chip ${timePeriod==='custom'?'active':''}`} onClick={()=>{setTimePeriod('custom');setShowCal(true)}} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
@@ -659,8 +662,8 @@ function DashboardPage({complaints,compliments,onNavigate}){
 /* ═══ REVIEWS PAGE ═══ */
 function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActionStates,setToast,setEmailModal}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>daysAgo(7));
-  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
+  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
   const [location,setLocation]=useState('');
   const [type,setType]=useState('');
   const [source,setSource]=useState('');
@@ -694,7 +697,7 @@ function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActi
     <div>
       <div className="page-header"><h2>Reviews</h2><p>{fmt(dateFrom)} – {fmt(dateTo)} · {all.length} results</p></div>
       <div className="time-bar">
-        <button className={`time-chip active`} onClick={()=>{setDateFrom(daysAgo(7));setDateTo(new Date())}}>Last 7 Days</button>
+        <button className={`time-chip active`} onClick={()=>{setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
         <button className="time-chip" onClick={()=>{setDateFrom(daysAgo(30));setDateTo(new Date())}}>Last 30 Days</button>
         <button className="time-chip" onClick={()=>{setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
         <button className="time-chip" onClick={()=>setShowCal(true)} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
@@ -722,8 +725,8 @@ function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActi
 /* ═══ REPORT PAGE ═══ */
 function ReportPage({complaints,compliments}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>daysAgo(7));
-  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
+  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
   const prevFrom=new Date(dateFrom.getTime()-(dateTo-dateFrom));const prevTo=new Date(dateFrom.getTime()-1);
   const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[complaints,dateFrom,dateTo]);
   const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[compliments,dateFrom,dateTo]);
@@ -757,7 +760,7 @@ function ReportPage({complaints,compliments}){
     <div>
       <div className="page-header"><div className="flex items-center gap-2"><h2>Report</h2><InfoIcon text="Scores = % positive feedback. Actions tracked via feedback@bbagel.co.uk email system."/></div><p>Performance overview & improvement insights</p></div>
       <div className="time-bar">
-        <button className="time-chip active" onClick={()=>{setDateFrom(daysAgo(7));setDateTo(new Date())}}>Last 7 Days</button>
+        <button className="time-chip active" onClick={()=>{setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
         <button className="time-chip" onClick={()=>{setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
         <button className="time-chip" onClick={()=>{setDateFrom(startOfLastMonth());setDateTo(endOfLastMonth())}}>Last Month</button>
         <button className="time-chip" onClick={()=>setShowCal(true)} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
