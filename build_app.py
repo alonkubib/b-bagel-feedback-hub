@@ -1534,8 +1534,14 @@ function DigestPage(){
 
 /* ═══ SETTINGS with configurable actions ═══ */
 function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMysteryCats, users, setUsers, onImportComplete}){
+  const {updateAccount}=useAccount()||{};
   const [toast,setToast]=useState('');
   const [newActionLabel,setNewActionLabel]=useState('');
+  const [addingLocation,setAddingLocation]=useState(false);
+  const [newLocName,setNewLocName]=useState('');
+  const [newLocAddress,setNewLocAddress]=useState('');
+  const [newLocColor,setNewLocColor]=useState('#d4372c');
+  const LOC_COLORS=['#d4372c','#2563eb','#7c3aed','#16a34a','#d97706','#0891b2','#be185d','#6366f1','#ea580c','#059669'];
   const [newActionIcon,setNewActionIcon]=useState('📌');
   const [settingsTab,setSettingsTab]=useState('sources');
   const [reviewCfg,setReviewCfg]=useState(()=>getReviewConfig());
@@ -2124,7 +2130,23 @@ function fetchJustEatReviews(restaurantUrl) {
     </div>}
 
     {/* ═══ LOCATIONS TAB ═══ */}
-    {settingsTab==='locations'&&<div className="card" style={{marginBottom:20}}><h3 style={{fontSize:15,fontWeight:700,marginBottom:12}}>Locations</h3><div className="text-xs text-muted mb-3">Manage active stores</div>{LOCATIONS.map(l=><div key={l.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid var(--border)'}}><div className="flex items-center gap-3"><div style={{width:10,height:10,borderRadius:'50%',background:l.color}}/><div><div className="text-sm font-bold">{l.name}</div><div className="text-xs text-light">{l.address} · Open since {new Date(l.openedDate).toLocaleDateString('en-GB',{month:'short',year:'numeric'})}</div></div></div><div className="switch on"/></div>)}<button className="btn btn-secondary btn-sm mt-3">+ Add Location</button></div>}
+    {settingsTab==='locations'&&<div className="card" style={{marginBottom:20}}><h3 style={{fontSize:15,fontWeight:700,marginBottom:12}}>Locations</h3><div className="text-xs text-muted mb-3">Manage your stores and branches</div>
+      {LOCATIONS.length===0&&!addingLocation&&<div style={{padding:24,textAlign:'center',background:'var(--surface2)',borderRadius:'var(--r-sm)',marginBottom:12}}><div style={{fontSize:28,marginBottom:8}}>📍</div><div className="text-sm font-bold mb-1">No locations yet</div><div className="text-xs text-muted mb-3">Add your first store or branch to start tracking feedback by location.</div><button className="btn btn-primary btn-sm" onClick={()=>setAddingLocation(true)}>+ Add Your First Location</button></div>}
+      {LOCATIONS.map(l=><div key={l.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid var(--border)'}}><div className="flex items-center gap-3"><div style={{width:10,height:10,borderRadius:'50%',background:l.color}}/><div><div className="text-sm font-bold">{l.name}</div><div className="text-xs text-light">{l.address}{l.openedDate&&(' · Open since '+new Date(l.openedDate).toLocaleDateString('en-GB',{month:'short',year:'numeric'}))}</div></div></div>
+        <button className="btn btn-secondary btn-sm" style={{fontSize:11,padding:'4px 10px',color:'#b91c1c'}} onClick={()=>{if(confirm('Remove '+l.name+'?')){const newLocs=LOCATIONS.filter(x=>x.id!==l.id);if(updateAccount)updateAccount({locations:newLocs});setToast(l.name+' removed')}}}>Remove</button>
+      </div>)}
+      {addingLocation&&<div style={{padding:16,background:'var(--surface2)',borderRadius:'var(--r-sm)',marginTop:12,border:'2px solid var(--green)'}}>
+        <div className="text-sm font-bold mb-2">Add New Location</div>
+        <div style={{marginBottom:8}}><label className="text-xs text-muted" style={{display:'block',marginBottom:4}}>Name *</label><input className="filter-select" style={{width:'100%',maxWidth:300}} placeholder="e.g. Fulham, Main Street..." value={newLocName} onChange={e=>setNewLocName(e.target.value)}/></div>
+        <div style={{marginBottom:8}}><label className="text-xs text-muted" style={{display:'block',marginBottom:4}}>Address</label><input className="filter-select" style={{width:'100%',maxWidth:400}} placeholder="e.g. 236 Fulham Rd, SW10 9NB" value={newLocAddress} onChange={e=>setNewLocAddress(e.target.value)}/></div>
+        <div style={{marginBottom:12}}><label className="text-xs text-muted" style={{display:'block',marginBottom:4}}>Color</label><div className="flex items-center gap-2">{LOC_COLORS.map(c=><div key={c} onClick={()=>setNewLocColor(c)} style={{width:24,height:24,borderRadius:'50%',background:c,cursor:'pointer',border:newLocColor===c?'3px solid var(--text)':'3px solid transparent'}}/>)}</div></div>
+        <div className="flex items-center gap-2">
+          <button className="btn btn-primary btn-sm" onClick={()=>{if(!newLocName.trim()){setToast('Name is required');return}const id=newLocName.trim().toLowerCase().replace(/[^a-z0-9]+/g,'_');const newLoc={id,name:newLocName.trim(),address:newLocAddress.trim(),color:newLocColor,openedDate:new Date().toISOString().slice(0,10)};const newLocs=[...LOCATIONS,newLoc];if(updateAccount)updateAccount({locations:newLocs});setNewLocName('');setNewLocAddress('');setAddingLocation(false);setToast(newLocName.trim()+' added!')}}>Save Location</button>
+          <button className="btn btn-secondary btn-sm" onClick={()=>{setAddingLocation(false);setNewLocName('');setNewLocAddress('')}}>Cancel</button>
+        </div>
+      </div>}
+      {LOCATIONS.length>0&&!addingLocation&&<button className="btn btn-secondary btn-sm mt-3" onClick={()=>setAddingLocation(true)}>+ Add Location</button>}
+    </div>}
 
     {/* ═══ EMAIL TAB ═══ */}
     {settingsTab==='email'&&<div className="card" style={{marginBottom:20}}><h3 style={{fontSize:15,fontWeight:700,marginBottom:12}}>Email</h3>
@@ -2156,7 +2178,8 @@ function App(){
   /* Set LOCATIONS dynamically from account */
   useEffect(()=>{
     if(acct&&acct.locations&&acct.locations.length>0){LOCATIONS=acct.locations}
-    else{LOCATIONS=BBAGEL_LOCATIONS}
+    else if(acct&&acct.hasEmbeddedData){LOCATIONS=BBAGEL_LOCATIONS}
+    else{LOCATIONS=[]}
   },[acct]);
 
   /* Merge embedded + imported reviews — only show embedded data for B Bagel account */
@@ -2229,14 +2252,26 @@ function Root(){
     const s=loadSession();if(!s)return;
     const accts=loadAccounts();
     const a=accts.find(ac=>ac.id===s.accountId);
-    if(a){LOCATIONS=a.locations&&a.locations.length?a.locations:BBAGEL_LOCATIONS}
+    if(a){LOCATIONS=a.locations&&a.locations.length?a.locations:(a.hasEmbeddedData?BBAGEL_LOCATIONS:[])}
     setAcct(a);
     setLoggedIn(true);
   };
   const handleLogout=()=>{clearSession();setLoggedIn(false);setAcct(null)};
+  const updateAccount=(updates)=>{
+    const accts=loadAccounts();
+    const idx=accts.findIndex(a=>a.id===acct.id);
+    if(idx===-1)return;
+    const updated={...accts[idx],...updates};
+    accts[idx]=updated;
+    saveAccounts(accts);
+    setAcct(updated);
+    if(updated.locations&&updated.locations.length>0){LOCATIONS=updated.locations}
+    else if(updated.hasEmbeddedData){LOCATIONS=BBAGEL_LOCATIONS}
+    else{LOCATIONS=[]}
+  };
 
   if(!loggedIn)return React.createElement(LoginScreen,{onLogin:handleLogin});
-  return React.createElement(AccountCtx.Provider,{value:{...acct,logout:handleLogout}},
+  return React.createElement(AccountCtx.Provider,{value:{...acct,logout:handleLogout,updateAccount}},
     React.createElement(App,null)
   );
 }
