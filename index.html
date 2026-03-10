@@ -271,6 +271,141 @@ const FEATURE_LIST=[
   {id:'settings',label:'Settings'},
 ];
 
+/* ═══ REVIEW IMPORT ENGINE ═══
+   Fetches reviews from public platforms via a Google Apps Script proxy.
+   Stores config in localStorage, imported reviews in localStorage too.
+   Merges imported reviews with embedded data on every render.
+*/
+
+const REVIEW_PLATFORMS=[
+  {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',fieldLabel:'Google Place ID',fieldPlaceholder:'e.g. ChIJ...  (from Google Maps URL)',fieldHelp:'Find your Place ID at: https://developers.google.com/maps/documentation/places/web-service/place-id',public:true},
+  {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',fieldLabel:'Trustpilot Business URL',fieldPlaceholder:'e.g. https://www.trustpilot.com/review/bbagel.co.uk',fieldHelp:'Your Trustpilot business page URL',public:true},
+  {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',fieldLabel:'TripAdvisor URL',fieldPlaceholder:'e.g. https://www.tripadvisor.co.uk/Restaurant_Review-...',fieldHelp:'Your TripAdvisor listing page URL',public:true},
+  {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',fieldLabel:'Deliveroo Store URL',fieldPlaceholder:'e.g. https://deliveroo.co.uk/menu/london/fulham/b-bagel-fulham',fieldHelp:'Your Deliveroo restaurant page URL. Requires login — click "Fetch" to open login window.',public:false},
+  {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',fieldLabel:'Just Eat Restaurant URL',fieldPlaceholder:'e.g. https://www.just-eat.co.uk/restaurants-b-bagel-...',fieldHelp:'Your Just Eat restaurant listing URL',public:true},
+];
+
+/* Saved config shape in localStorage('bbagel_review_sources'):
+   { proxyUrl: 'https://script.google.com/macros/s/.../exec',
+     googleApiKey: '',
+     locations: { fulham: { google: 'ChIJ...', trustpilot: 'https://...', ... }, ... },
+     lastImport: { fulham: { google: '2026-03-10T...', ... }, ... }
+   }
+*/
+
+function getReviewConfig(){
+  try{return JSON.parse(localStorage.getItem('bbagel_review_sources'))||{}}catch(e){return{}}
+}
+function saveReviewConfig(cfg){
+  localStorage.setItem('bbagel_review_sources',JSON.stringify(cfg));
+}
+
+/* Import reviews from a single platform for a single location */
+async function fetchReviewsFromProxy(proxyUrl, platform, locationId, platformUrl, apiKey, since){
+  if(!proxyUrl||!platformUrl) return {ok:false,error:'Missing proxy URL or platform URL'};
+  try{
+    const params=new URLSearchParams({platform,locationId,url:platformUrl,since:since||''});
+    if(apiKey) params.set('apiKey',apiKey);
+    const resp=await fetch(proxyUrl+'?'+params.toString());
+    if(!resp.ok) return {ok:false,error:'Proxy returned '+resp.status};
+    const data=await resp.json();
+    if(data.error) return {ok:false,error:data.error};
+    return {ok:true,reviews:data.reviews||[],count:data.reviews?.length||0};
+  }catch(e){
+    return {ok:false,error:e.message};
+  }
+}
+
+/* Get all imported reviews from localStorage */
+function getImportedReviews(){
+  try{return JSON.parse(localStorage.getItem('bbagel_imported_reviews'))||{complaints:[],compliments:[]}}catch(e){return{complaints:[],compliments:[]}}
+}
+function saveImportedReviews(data){
+  localStorage.setItem('bbagel_imported_reviews',JSON.stringify(data));
+}
+
+/* Deduplicate by creating a fingerprint from date+source+info substring */
+function reviewFingerprint(r){
+  const info=(r.info||'').substring(0,60).toLowerCase().replace(/[^a-z0-9]/g,'');
+  return (r.location||'')+'|'+(r.date||'')+'|'+(r.source||'')+'|'+info;
+}
+
+/* Merge fetched reviews into localStorage, avoiding duplicates */
+function mergeImportedReviews(newReviews, locationName, platformName){
+  const existing=getImportedReviews();
+  const allFingerprints=new Set();
+
+  /* Fingerprint embedded data too */
+  const embeddedComps=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
+  const embeddedComplaints=typeof COMPLAINT_DATA!=='undefined'?COMPLAINT_DATA:[];
+  [...embeddedComps,...embeddedComplaints,...existing.complaints,...existing.compliments].forEach(r=>allFingerprints.add(reviewFingerprint(r)));
+
+  let added=0;
+  newReviews.forEach(r=>{
+    const review={
+      location:locationName,
+      date:r.date||new Date().toISOString().split('T')[0],
+      source:platformName,
+      type:r.type||'General',
+      info:r.text||r.info||'',
+      customer:r.author||r.customer||'Anonymous',
+      ...(r.employee?{employee:r.employee}:{}),
+      ...(r.rating!==undefined?{rating:r.rating}:{})
+    };
+    const fp=reviewFingerprint(review);
+    if(!allFingerprints.has(fp)){
+      allFingerprints.add(fp);
+      /* Rating >= 4 or no rating = compliment; else complaint */
+      const isCompliment=r.rating===undefined||r.rating>=4;
+      if(isCompliment){
+        existing.compliments.push(review);
+      }else{
+        existing.complaints.push({...review,action:'',manager:''});
+      }
+      added++;
+    }
+  });
+
+  saveImportedReviews(existing);
+  return added;
+}
+
+/* Run full import for all configured locations and platforms */
+async function runFullImport(onProgress){
+  const cfg=getReviewConfig();
+  if(!cfg.proxyUrl){return{total:0,errors:['No proxy URL configured. Please set up the Google Apps Script proxy in Settings → Review Sources.']};}
+
+  const results={total:0,errors:[],details:{}};
+  const locs=cfg.locations||{};
+
+  for(const loc of LOCATIONS){
+    const locCfg=locs[loc.id]||{};
+    for(const platform of REVIEW_PLATFORMS){
+      const url=locCfg[platform.id];
+      if(!url) continue;
+
+      const lastImport=(cfg.lastImport||{})[loc.id]?.[platform.id]||'';
+      if(onProgress) onProgress(loc.name+' — '+platform.name);
+
+      const result=await fetchReviewsFromProxy(cfg.proxyUrl,platform.id,loc.id,url,cfg.googleApiKey,lastImport);
+      if(result.ok&&result.reviews.length>0){
+        const added=mergeImportedReviews(result.reviews,loc.name,platform.name);
+        results.total+=added;
+        results.details[loc.id+'/'+platform.id]={fetched:result.count,added};
+        /* Update last import timestamp */
+        if(!cfg.lastImport) cfg.lastImport={};
+        if(!cfg.lastImport[loc.id]) cfg.lastImport[loc.id]={};
+        cfg.lastImport[loc.id][platform.id]=new Date().toISOString();
+      }else if(!result.ok){
+        results.errors.push(loc.name+'/'+platform.name+': '+result.error);
+      }
+    }
+  }
+
+  saveReviewConfig(cfg);
+  return results;
+}
+
 const DEFAULT_ACTIONS=[
   {id:'respond',label:'Send Response',icon:'✉',always:true,removable:false},
   {id:'log_incident',label:'Log Incident',icon:'📋',keywords:['food poisoning','allergy','hospital','glass','metal','insect','sick','vomit','injury'],forType:'complaint'},
@@ -946,18 +1081,58 @@ function MysteryShopperPage({mysteryCats}){
 }
 
 /* ═══ INTEGRATIONS ═══ */
-function IntegrationsPage(){
-  const [exp,setExp]=useState('');
+function IntegrationsPage({onNavigate}){
+  const cfg=getReviewConfig();
+  const locs=cfg.locations||{};
+  const hasProxy=!!cfg.proxyUrl;
+
+  /* Compute live status per platform */
+  const platformStatus=(platformId)=>{
+    const configuredLocs=LOCATIONS.filter(l=>(locs[l.id]||{})[platformId]);
+    if(!hasProxy) return {status:'disconnected',label:'Proxy Not Set',locCount:configuredLocs.length};
+    if(configuredLocs.length===0) return {status:'disconnected',label:'Not Configured',locCount:0};
+    return {status:'connected',label:configuredLocs.length+'/'+LOCATIONS.length+' locations',locCount:configuredLocs.length};
+  };
+
   const ints=[
-    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',status:'connected',desc:'Auto-collects reviews from Google Business profiles.',steps:['Go to Google Business Profile Manager','Navigate to API Access','Generate key or connect via OAuth','Paste key and select locations','Syncs every 6 hours']},
-    {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',status:'connected',desc:'Reviews AND refund data.',steps:['Log into Deliveroo Restaurant Hub','Settings → API Access','Enter Partner credentials','Grant read access to Reviews & Refunds','Syncs every 4 hours']},
-    {id:'trustpilot',name:'TrustPilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',status:'setup',desc:'Monitors TrustPilot page.',steps:['Sign into TrustPilot Business','Integrations → API','Generate API key','Enter key and business unit ID','Syncs hourly']},
-    {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',status:'setup',desc:'Order reviews from Just Eat.',steps:['Log into Partner Centre','Navigate to Reviews','Enter credentials','Syncs every 6 hours']},
-    {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',status:'disconnected',desc:'Monitors listing.',steps:['Find listing on TripAdvisor','Copy page URL','Paste below','Updates every 12 hours']},
-    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',status:'connected',desc:'Feedback via email or contact form.',steps:['Set up email forwarding','Or connect webform webhook','Emails parsed for customer info','Auto-categorised']},
+    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',desc:'Public Google reviews via Places API or scraping.',public:true},
+    {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',desc:'Public Trustpilot reviews scraped from business page.',public:true},
+    {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',desc:'Public TripAdvisor reviews from listing page.',public:true},
+    {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',desc:'Deliveroo reviews (public page scraping).',public:false},
+    {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',desc:'Just Eat reviews from restaurant page.',public:true},
+    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',desc:'Feedback via email — manually added.',public:true},
   ];
-  return(<div><div className="page-header"><h2>Integrations</h2><p>Connect review platforms</p></div>
-    {ints.map(i=><div key={i.id} className="int-card"><div className="int-icon" style={{background:i.bg,color:i.color,fontSize:i.icon.length>1?14:20,fontWeight:800}}>{i.icon}</div><div className="int-body"><div className="int-name">{i.name}</div><div className="int-desc">{i.desc}</div><div className="flex items-center gap-2" style={{flexWrap:'wrap'}}><span className={`int-status ${i.status==='connected'?'int-connected':'int-disconnected'}`}>{i.status==='connected'?'● Connected':i.status==='setup'?'○ Needs Setup':'○ Not Connected'}</span><button className="btn btn-sm btn-secondary" onClick={()=>setExp(exp===i.id?'':i.id)}>{exp===i.id?'Hide':'Setup'}</button>{i.status!=='connected'&&<button className="btn btn-sm btn-primary">Connect</button>}</div>{exp===i.id&&<div className="int-steps"><ol>{i.steps.map((s,j)=><li key={j}>{s}</li>)}</ol></div>}</div></div>)}
+
+  const imported=getImportedReviews();
+  const totalImported=(imported.complaints?.length||0)+(imported.compliments?.length||0);
+
+  return(<div><div className="page-header"><h2>Integrations</h2><p>Live review collection status</p></div>
+
+    {/* Status summary */}
+    <div className="card" style={{marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
+      <div>
+        <div className="text-sm font-bold">Import Engine</div>
+        <div className="text-xs text-muted">{hasProxy?<span style={{color:'var(--green)'}}>● Proxy connected</span>:<span style={{color:'var(--red)'}}>○ Proxy not configured</span>} · {totalImported} reviews imported</div>
+      </div>
+      <button className="btn btn-sm btn-primary" onClick={()=>onNavigate&&onNavigate('settings')}>Configure in Settings</button>
+    </div>
+
+    {ints.map(i=>{
+      const st=platformStatus(i.id);
+      return <div key={i.id} className="int-card">
+        <div className="int-icon" style={{background:i.bg,color:i.color,fontSize:i.icon.length>1?14:20,fontWeight:800}}>{i.icon}</div>
+        <div className="int-body">
+          <div className="int-name">{i.name}</div>
+          <div className="int-desc">{i.desc}</div>
+          <div className="flex items-center gap-2" style={{flexWrap:'wrap'}}>
+            <span className={`int-status ${st.status==='connected'?'int-connected':'int-disconnected'}`}>
+              {st.status==='connected'?'● '+st.label:'○ '+st.label}
+            </span>
+            {!i.public&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'var(--amber-soft)',color:'var(--amber)'}}>Login may be needed</span>}
+          </div>
+        </div>
+      </div>;
+    })}
   </div>);
 }
 
@@ -992,11 +1167,15 @@ function DigestPage(){
 }
 
 /* ═══ SETTINGS with configurable actions ═══ */
-function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMysteryCats, users, setUsers}){
+function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMysteryCats, users, setUsers, onImportComplete}){
   const [toast,setToast]=useState('');
   const [newActionLabel,setNewActionLabel]=useState('');
   const [newActionIcon,setNewActionIcon]=useState('📌');
-  const [settingsTab,setSettingsTab]=useState('actions');
+  const [settingsTab,setSettingsTab]=useState('sources');
+  const [reviewCfg,setReviewCfg]=useState(()=>getReviewConfig());
+  const [importing,setImporting]=useState(false);
+  const [importStatus,setImportStatus]=useState('');
+  const [expandedLoc,setExpandedLoc]=useState(null);
   const [editingCat,setEditingCat]=useState(null);
   const [editingUser,setEditingUser]=useState(null);
   const [newUserName,setNewUserName]=useState('');
@@ -1056,13 +1235,327 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
 
   const totalWeight=mysteryCats.reduce((a,c)=>a+c.w,0);
 
-  const tabs=[{id:'actions',label:'Actions'},{id:'mystery',label:'Mystery Shopper'},{id:'permissions',label:'Permissions'},{id:'locations',label:'Locations'},{id:'email',label:'Email'},{id:'data',label:'Data'}];
+  const tabs=[{id:'sources',label:'Review Sources'},{id:'actions',label:'Actions'},{id:'mystery',label:'Mystery Shopper'},{id:'permissions',label:'Permissions'},{id:'locations',label:'Locations'},{id:'email',label:'Email'},{id:'data',label:'Data'}];
 
   return(<div>{toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}<div className="page-header"><h2>Settings</h2><p>Configure your Feedback Hub</p></div>
 
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:20}}>
       {tabs.map(t=><button key={t.id} className={`time-chip ${settingsTab===t.id?'active':''}`} onClick={()=>setSettingsTab(t.id)}>{t.label}</button>)}
     </div>
+
+    {/* ═══ REVIEW SOURCES TAB ═══ */}
+    {settingsTab==='sources'&&<div>
+      {/* Proxy URL Setup */}
+      <div className="card" style={{marginBottom:16}}>
+        <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>
+          <div style={{width:40,height:40,borderRadius:'var(--r-sm)',background:'var(--red-soft)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <span style={{fontSize:18}}>⚡</span>
+          </div>
+          <div style={{flex:1}}>
+            <h3 style={{fontSize:15,fontWeight:700,marginBottom:2}}>Review Import Proxy</h3>
+            <div className="text-xs text-muted" style={{lineHeight:1.6}}>Deploy a free Google Apps Script to fetch reviews without CORS issues. This runs on Google's servers and acts as a bridge between this app and review platforms.</div>
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Proxy URL</label>
+          <div className="flex gap-2" style={{flexWrap:'wrap'}}>
+            <input className="filter-input" value={reviewCfg.proxyUrl||''} onChange={e=>{const c={...reviewCfg,proxyUrl:e.target.value};setReviewCfg(c);saveReviewConfig(c)}} placeholder="https://script.google.com/macros/s/.../exec" style={{flex:1,maxWidth:'none',minWidth:200}}/>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{window.open('https://script.google.com/home','_blank')}}>Open Apps Script</button>
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Google Places API Key <span className="text-light">(optional — for richer Google Reviews data)</span></label>
+          <input className="filter-input" value={reviewCfg.googleApiKey||''} onChange={e=>{const c={...reviewCfg,googleApiKey:e.target.value};setReviewCfg(c);saveReviewConfig(c)}} placeholder="AIza..." style={{maxWidth:'none',width:'100%'}}/>
+        </div>
+        <details style={{background:'var(--surface2)',borderRadius:'var(--r-sm)',padding:12}}>
+          <summary className="text-xs font-bold" style={{cursor:'pointer',color:'var(--blue)'}}>How to deploy the proxy (2 minutes)</summary>
+          <ol className="text-xs text-muted" style={{paddingLeft:18,marginTop:8,lineHeight:2}}>
+            <li>Go to <a href="https://script.google.com/home" target="_blank" style={{color:'var(--blue)',textDecoration:'underline'}}>script.google.com</a> and click <strong>New Project</strong></li>
+            <li>Delete any existing code and paste the proxy script (click "Copy Script" below)</li>
+            <li>Click <strong>Deploy → New Deployment</strong></li>
+            <li>Select <strong>Web app</strong>, set access to <strong>"Anyone"</strong></li>
+            <li>Click <strong>Deploy</strong> and copy the URL</li>
+            <li>Paste the URL in the Proxy URL field above</li>
+          </ol>
+          <button className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={()=>{
+            const script=`// B Bagel Review Proxy — Google Apps Script
+// Deploy as Web App with access: "Anyone"
+
+function doGet(e) {
+  var p = e.parameter;
+  var platform = p.platform || '';
+  var url = p.url || '';
+  var apiKey = p.apiKey || '';
+  var since = p.since || '';
+
+  try {
+    var reviews = [];
+
+    if (platform === 'google') {
+      reviews = fetchGoogleReviews(url, apiKey);
+    } else if (platform === 'trustpilot') {
+      reviews = fetchTrustpilotReviews(url);
+    } else if (platform === 'tripadvisor') {
+      reviews = fetchTripAdvisorReviews(url);
+    } else if (platform === 'justeat') {
+      reviews = fetchJustEatReviews(url);
+    } else {
+      return jsonResp({error: 'Unknown platform: ' + platform});
+    }
+
+    // Filter by date if since is provided
+    if (since) {
+      var sinceDate = new Date(since);
+      reviews = reviews.filter(function(r) {
+        return new Date(r.date) > sinceDate;
+      });
+    }
+
+    return jsonResp({reviews: reviews, count: reviews.length});
+  } catch(err) {
+    return jsonResp({error: err.message});
+  }
+}
+
+function jsonResp(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function fetchGoogleReviews(placeId, apiKey) {
+  if (!apiKey) {
+    // Fallback: scrape from Google Maps (limited)
+    var url = 'https://www.google.com/maps/place/?q=place_id:' + placeId;
+    var html = UrlFetchApp.fetch(url, {muteHttpExceptions: true}).getContentText();
+    return parseGoogleHTML(html);
+  }
+  // Use Places API
+  var apiUrl = 'https://maps.googleapis.com/maps/api/place/details/json?place_id=' + placeId + '&fields=reviews&key=' + apiKey;
+  var resp = UrlFetchApp.fetch(apiUrl, {muteHttpExceptions: true});
+  var data = JSON.parse(resp.getContentText());
+  if (data.result && data.result.reviews) {
+    return data.result.reviews.map(function(r) {
+      return {
+        date: new Date(r.time * 1000).toISOString().split('T')[0],
+        rating: r.rating,
+        author: r.author_name,
+        text: r.text,
+        source: 'Google'
+      };
+    });
+  }
+  return [];
+}
+
+function parseGoogleHTML(html) {
+  // Basic extraction from Google Maps HTML — handles common review patterns
+  var reviews = [];
+  try {
+    var blocks = html.split(/class="[^"]*review[^"]*"/gi);
+    // Google Maps HTML is heavily obfuscated; this is best-effort
+    // For reliable results, use the Places API with an API key
+  } catch(e) {}
+  return reviews;
+}
+
+function fetchTrustpilotReviews(businessUrl) {
+  var reviews = [];
+  // Trustpilot has structured data in their pages
+  for (var page = 1; page <= 3; page++) {
+    var url = businessUrl + (page > 1 ? '?page=' + page : '');
+    var html = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true}).getContentText();
+
+    // Extract JSON-LD structured data
+    var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
+    ldMatches.forEach(function(m) {
+      try {
+        var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
+        var data = JSON.parse(json);
+        if (data['@type'] === 'LocalBusiness' && data.review) {
+          (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
+            reviews.push({
+              date: r.datePublished || '',
+              rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
+              author: r.author ? r.author.name : 'Anonymous',
+              text: r.reviewBody || '',
+              source: 'Trustpilot'
+            });
+          });
+        }
+      } catch(e) {}
+    });
+
+    // Also try parsing review cards from HTML
+    var reviewBlocks = html.split(/data-review-id/gi);
+    if (reviewBlocks.length <= 1 && reviews.length === 0) {
+      // Try alternate pattern
+      var stars = html.match(/data-service-review-rating="(\\\\d)"/gi) || [];
+      var texts = html.match(/data-service-review-text-typography[^>]*>([^<]+)</gi) || [];
+      var dates = html.match(/datetime="([^"]+)"/gi) || [];
+      var names = html.match(/data-consumer-name-typography[^>]*>([^<]+)</gi) || [];
+    }
+  }
+  return reviews;
+}
+
+function fetchTripAdvisorReviews(listingUrl) {
+  var reviews = [];
+  var html = UrlFetchApp.fetch(listingUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
+
+  // TripAdvisor uses JSON-LD and structured review data
+  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
+  ldMatches.forEach(function(m) {
+    try {
+      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
+      var data = JSON.parse(json);
+      if (data.review) {
+        (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
+          reviews.push({
+            date: r.datePublished || '',
+            rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
+            author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
+            text: r.reviewBody || r.name || '',
+            source: 'TripAdvisor'
+          });
+        });
+      }
+    } catch(e) {}
+  });
+  return reviews;
+}
+
+function fetchJustEatReviews(restaurantUrl) {
+  var reviews = [];
+  var html = UrlFetchApp.fetch(restaurantUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
+
+  // Just Eat embeds review data in the page
+  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
+  ldMatches.forEach(function(m) {
+    try {
+      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
+      var data = JSON.parse(json);
+      if (data.review) {
+        (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
+          reviews.push({
+            date: r.datePublished || '',
+            rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
+            author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
+            text: r.reviewBody || '',
+            source: 'Just Eat'
+          });
+        });
+      }
+    } catch(e) {}
+  });
+  return reviews;
+}`;
+            navigator.clipboard.writeText(script).then(()=>setToast('Proxy script copied to clipboard!')).catch(()=>{
+              const ta=document.createElement('textarea');ta.value=script;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);setToast('Proxy script copied!');
+            });
+          }}>📋 Copy Proxy Script</button>
+        </details>
+      </div>
+
+      {/* Import Now + Status */}
+      <div className="card" style={{marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
+        <div>
+          <h3 style={{fontSize:15,fontWeight:700,marginBottom:2}}>Import Reviews</h3>
+          <div className="text-xs text-muted">{importing?importStatus:'Click to fetch new reviews from all configured sources'}</div>
+          {(()=>{const cfg=getReviewConfig();const last=cfg.lastAutoImport;return last?<div className="text-xs text-light" style={{marginTop:4}}>Last import: {new Date(last).toLocaleString('en-GB')}</div>:null})()}
+        </div>
+        <div className="flex gap-2">
+          <button className={'btn btn-primary'+(importing?' btn-disabled':'')} disabled={importing} onClick={async()=>{
+            if(!reviewCfg.proxyUrl){setToast('Please set up the proxy URL first');return}
+            setImporting(true);setImportStatus('Starting import...');
+            try{
+              const result=await runFullImport((msg)=>setImportStatus(msg));
+              if(result.total>0){
+                if(onImportComplete) onImportComplete();
+                setToast('Imported '+result.total+' new reviews!');
+              }else if(result.errors.length>0){
+                setToast('Import errors: '+result.errors[0]);
+              }else{
+                setToast('No new reviews found');
+              }
+            }catch(e){setToast('Import failed: '+e.message)}
+            setImporting(false);setImportStatus('');
+          }}>{importing?<span style={{display:'inline-block',width:14,height:14,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 1s linear infinite'}}/>:'⚡'} {importing?'Importing...':'Import Now'}</button>
+          <button className="btn btn-secondary btn-sm" onClick={()=>{
+            const data=getImportedReviews();
+            const total=(data.complaints?.length||0)+(data.compliments?.length||0);
+            setToast('Imported reviews in storage: '+total);
+          }}>Status</button>
+        </div>
+      </div>
+
+      {/* Per-location platform config */}
+      <div className="card" style={{marginBottom:16}}>
+        <h3 style={{fontSize:15,fontWeight:700,marginBottom:4}}>Location Review Sources</h3>
+        <div className="text-xs text-muted mb-3">Configure review platform URLs for each location. Only locations with URLs will be fetched.</div>
+
+        {LOCATIONS.map(loc=>{
+          const locCfg=(reviewCfg.locations||{})[loc.id]||{};
+          const configuredCount=REVIEW_PLATFORMS.filter(p=>locCfg[p.id]).length;
+          const isExpanded=expandedLoc===loc.id;
+
+          return <div key={loc.id} style={{marginBottom:8,border:'1px solid var(--border)',borderRadius:'var(--r-sm)',overflow:'hidden'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'12px 16px',background:'var(--surface2)',cursor:'pointer'}} onClick={()=>setExpandedLoc(isExpanded?null:loc.id)}>
+              <div className="flex items-center gap-3">
+                <div style={{width:10,height:10,borderRadius:'50%',background:loc.color}}/>
+                <div>
+                  <div className="text-sm font-bold">{loc.name}</div>
+                  <div className="text-xs text-light">{configuredCount} source{configuredCount!==1?'s':''} configured</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {configuredCount>0&&<span style={{fontSize:11,fontWeight:600,color:'var(--green)'}}>● Active</span>}
+                <span style={{fontSize:16,transform:isExpanded?'rotate(180deg)':'',transition:'var(--t)'}}>▾</span>
+              </div>
+            </div>
+            {isExpanded&&<div style={{padding:16,borderTop:'1px solid var(--border)'}}>
+              {REVIEW_PLATFORMS.map(platform=><div key={platform.id} style={{marginBottom:14}}>
+                <div className="flex items-center gap-2" style={{marginBottom:4}}>
+                  <div style={{width:24,height:24,borderRadius:4,background:platform.bg,color:platform.color,display:'flex',alignItems:'center',justifyContent:'center',fontSize:platform.icon.length>1?9:12,fontWeight:800,flexShrink:0}}>{platform.icon}</div>
+                  <label className="text-xs font-bold">{platform.fieldLabel}</label>
+                  {!platform.public&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'var(--amber-soft)',color:'var(--amber)'}}>Login Required</span>}
+                </div>
+                <input className="filter-input" value={locCfg[platform.id]||''} onChange={e=>{
+                  const newCfg={...reviewCfg};
+                  if(!newCfg.locations) newCfg.locations={};
+                  if(!newCfg.locations[loc.id]) newCfg.locations[loc.id]={};
+                  newCfg.locations[loc.id][platform.id]=e.target.value;
+                  setReviewCfg(newCfg);
+                  saveReviewConfig(newCfg);
+                }} placeholder={platform.fieldPlaceholder} style={{width:'100%',maxWidth:'none'}}/>
+                <div className="text-xs text-light" style={{marginTop:2}}>{platform.fieldHelp}</div>
+              </div>)}
+            </div>}
+          </div>;
+        })}
+      </div>
+
+      {/* Quick bulk actions */}
+      <div className="card" style={{marginBottom:16}}>
+        <h3 style={{fontSize:15,fontWeight:700,marginBottom:8}}>Quick Actions</h3>
+        <div className="flex gap-2" style={{flexWrap:'wrap'}}>
+          <button className="btn btn-sm btn-secondary" onClick={()=>{
+            const data=getImportedReviews();
+            const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+            const url=URL.createObjectURL(blob);
+            const a=document.createElement('a');a.href=url;a.download='bbagel-imported-reviews.json';a.click();
+            URL.revokeObjectURL(url);
+            setToast('Exported imported reviews');
+          }}>Export Imported Reviews</button>
+          <button className="btn btn-sm" style={{color:'var(--red)',fontWeight:600}} onClick={()=>{
+            if(confirm('Clear all imported reviews from local storage? This cannot be undone.')){
+              localStorage.removeItem('bbagel_imported_reviews');
+              if(onImportComplete) onImportComplete();
+              setToast('Imported reviews cleared');
+            }
+          }}>Clear Imported Reviews</button>
+        </div>
+      </div>
+    </div>}
 
     {/* ═══ ACTIONS TAB ═══ */}
     {settingsTab==='actions'&&<div className="card" style={{marginBottom:20}}>
@@ -1210,8 +1703,33 @@ function App(){
   const [enabledActions,setEnabledActions]=useState(DEFAULT_ACTIONS.map(a=>({...a})));
   const [mysteryCats,setMysteryCats]=useState(DEFAULT_MYSTERY_CATS.map(c=>({...c,questions:[...(c.questions||[])]})));
   const [users,setUsers]=useState(DEFAULT_USERS.map(u=>({...u,permissions:{...u.permissions}})));
-  const complaints=typeof COMPLAINT_DATA!=='undefined'?COMPLAINT_DATA:[];
-  const compliments=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
+  const [importedData,setImportedData]=useState(()=>getImportedReviews());
+
+  /* Merge embedded + imported reviews */
+  const embeddedComplaints=typeof COMPLAINT_DATA!=='undefined'?COMPLAINT_DATA:[];
+  const embeddedCompliments=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
+  const complaints=useMemo(()=>[...embeddedComplaints,...(importedData.complaints||[])],[embeddedComplaints,importedData]);
+  const compliments=useMemo(()=>[...embeddedCompliments,...(importedData.compliments||[])],[embeddedCompliments,importedData]);
+
+  /* Auto-import on first load (once per session) */
+  const hasAutoImported=useRef(false);
+  useEffect(()=>{
+    if(hasAutoImported.current) return;
+    hasAutoImported.current=true;
+    const cfg=getReviewConfig();
+    if(!cfg.proxyUrl) return;
+    /* Check if last auto-import was less than 1 hour ago */
+    const lastAuto=cfg.lastAutoImport||0;
+    if(Date.now()-lastAuto<3600000) return;
+    runFullImport().then(result=>{
+      if(result.total>0){
+        cfg.lastAutoImport=Date.now();
+        saveReviewConfig(cfg);
+        setImportedData(getImportedReviews());
+        setToast('Auto-imported '+result.total+' new reviews');
+      }
+    }).catch(()=>{});
+  },[]);
   const urgentCount=complaints.filter(c=>flagReview(c.info)==='urgent').length;
   const activeActions=enabledActions.filter(a=>!a.disabled);
 
@@ -1222,9 +1740,9 @@ function App(){
       case 'report':return <ReportPage complaints={complaints} compliments={compliments}/>;
       case 'locations':return <LocationsPage complaints={complaints} compliments={compliments}/>;
       case 'mystery':return <MysteryShopperPage mysteryCats={mysteryCats}/>;
-      case 'integrations':return <IntegrationsPage/>;
+      case 'integrations':return <IntegrationsPage onNavigate={setPage}/>;
       case 'digest':return <DigestPage/>;
-      case 'settings':return <SettingsPage enabledActions={enabledActions} setEnabledActions={setEnabledActions} mysteryCats={mysteryCats} setMysteryCats={setMysteryCats} users={users} setUsers={setUsers}/>;
+      case 'settings':return <SettingsPage enabledActions={enabledActions} setEnabledActions={setEnabledActions} mysteryCats={mysteryCats} setMysteryCats={setMysteryCats} users={users} setUsers={setUsers} onImportComplete={()=>setImportedData(getImportedReviews())}/>;
       default:return <DashboardPage complaints={complaints} compliments={compliments} onNavigate={setPage}/>;
     }
   };
