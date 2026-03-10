@@ -1023,7 +1023,7 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
       {/* Action area */}
       <div className="suggestion-area" style={{marginTop:12,padding:14,background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:'var(--r-sm)'}}>
         {!cardState.status&&<>
-          <div className="suggestion-label">{I.bolt} Suggested Action</div>
+          <div className="suggestion-label">💡 Suggested Action</div>
           <div className="suggestion-actions">
             {actions.map(a=><button key={a.id} className="btn-action" onClick={()=>handleAction(a)}>
               <span>{a.icon}</span> {a.label}
@@ -1393,8 +1393,13 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
   const cfg=getReviewConfig();
   const locs=cfg.locations||{};
   const hasProxy=!!cfg.proxyUrl;
+  const [manualModal,setManualModal]=useState(null);
+  const [manualText,setManualText]=useState('');
+  const [manualLoc,setManualLoc]=useState(LOCATIONS[0]?.id||'');
+  const [manualType,setManualType]=useState('complaint');
+  const [manualSource,setManualSource]=useState('Email');
+  const [toast,setToast]=useState('');
 
-  /* Compute live status per platform */
   const platformStatus=(platformId)=>{
     const configuredLocs=LOCATIONS.filter(l=>(locs[l.id]||{})[platformId]);
     if(!hasProxy) return {status:'disconnected',label:'Proxy Not Set',locCount:configuredLocs.length};
@@ -1402,21 +1407,32 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
     return {status:'connected',label:configuredLocs.length+'/'+LOCATIONS.length+' locations',locCount:configuredLocs.length};
   };
 
+  const handleManualSubmit=()=>{
+    if(!manualText.trim())return;
+    const loc=LOCATIONS.find(l=>l.id===manualLoc);
+    const review={info:manualText.trim(),location:loc?loc.name:'Unknown',source:manualSource,date:new Date().toISOString().slice(0,10),customer_name:''};
+    const imported=getImportedReviews();
+    if(manualType==='complaint'){if(!imported.complaints)imported.complaints=[];imported.complaints.push(review)}
+    else{if(!imported.compliments)imported.compliments=[];imported.compliments.push(review)}
+    saveImportedReviews(imported);
+    setManualText('');setManualModal(null);setToast('Review added!');
+  };
+
   const ints=[
-    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',desc:'Public Google reviews via Places API or scraping.',public:true},
-    {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',desc:'Public Trustpilot reviews scraped from business page.',public:true},
-    {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',desc:'Public TripAdvisor reviews from listing page.',public:true},
-    {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',desc:'Deliveroo reviews (public page scraping).',public:false},
-    {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',desc:'Just Eat reviews from restaurant page.',public:true},
-    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',desc:'Feedback via email — manually added.',public:true},
+    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your Google review page URL in Settings → Review Sources.',public:true},
+    {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your Trustpilot business URL in Settings → Review Sources.',public:true},
+    {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your TripAdvisor listing URL in Settings → Review Sources.',public:true},
+    {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',method:'paste',howTo:'Deliveroo requires login to see reviews. Use Paste & Extract: open your Deliveroo reviews page in another tab, select all (Ctrl+A), copy (Ctrl+C), then paste here.',public:false},
+    {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your Just Eat restaurant URL in Settings → Review Sources.',public:true},
+    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',method:'manual',howTo:'For feedback received by email, phone, in-person, or your website contact form — add it manually using the button below.',public:true},
   ];
 
   const imported=getImportedReviews();
   const totalImported=(imported.complaints?.length||0)+(imported.compliments?.length||0);
 
-  return(<div><div className="page-header"><h2>Integrations</h2><p>Live review collection status</p></div>
+  return(<div>{toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}
+    <div className="page-header"><h2>Integrations</h2><p>How reviews get into Feedback Hub</p></div>
 
-    {/* Status summary */}
     <div className="card" style={{marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
       <div>
         <div className="text-sm font-bold">Import Engine</div>
@@ -1430,21 +1446,59 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
       return <div key={i.id} className="int-card">
         <div className="int-icon" style={{background:i.bg,color:i.color,fontSize:i.icon.length>1?14:20,fontWeight:800}}>{i.icon}</div>
         <div className="int-body">
-          <div className="int-name">{i.name}</div>
-          <div className="int-desc">{i.desc}</div>
+          <div className="int-name">{i.name} <span className="badge" style={{fontSize:9,padding:'1px 6px',marginLeft:6,background:i.method==='auto'?'var(--green-soft)':i.method==='paste'?'var(--amber-soft)':'var(--blue-soft)',color:i.method==='auto'?'var(--green)':i.method==='paste'?'var(--amber)':'var(--blue)'}}>{i.method==='auto'?'Automatic':i.method==='paste'?'Paste & Extract':'Manual Entry'}</span></div>
+          <div className="int-desc" style={{marginBottom:6}}>{i.howTo}</div>
           <div className="flex items-center gap-2" style={{flexWrap:'wrap'}}>
             <span className={`int-status ${st.status==='connected'?'int-connected':'int-disconnected'}`}>
               {st.status==='connected'?'● '+st.label:'○ '+st.label}
             </span>
-            {!i.public&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'var(--amber-soft)',color:'var(--amber)'}}>Login may be needed</span>}
-            {!i.public&&onPasteExtract&&st.locCount>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:4,fontSize:11,padding:'2px 10px'}} onClick={()=>{
-              const firstLoc=LOCATIONS.find(l=>(locs[l.id]||{})[i.id]);
-              if(firstLoc)onPasteExtract({platform:i.name,locationId:firstLoc.id});
-            }}>📋 Paste & Extract</button>}
+            {i.method==='paste'&&onPasteExtract&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>{
+              if(st.locCount>0){const firstLoc=LOCATIONS.find(l=>(locs[l.id]||{})[i.id]);if(firstLoc)onPasteExtract({platform:i.name,locationId:firstLoc.id})}
+              else{onPasteExtract({platform:i.name,locationId:LOCATIONS[0]?.id||''})}
+            }}>📋 Open Paste & Extract</button>}
+            {i.method==='manual'&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setManualModal(true)}>✏️ Add Review Manually</button>}
+            {i.method==='auto'&&st.status==='disconnected'&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>onNavigate&&onNavigate('settings')}>Set Up</button>}
           </div>
         </div>
       </div>;
     })}
+
+    {/* Manual review entry modal */}
+    {manualModal&&<div style={{position:'fixed',inset:0,zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,.5)'}}>
+      <div className="card" style={{width:480,maxWidth:'90vw',padding:24}}>
+        <div className="flex items-center justify-between" style={{marginBottom:16}}>
+          <h3 style={{fontSize:16,fontWeight:700}}>Add Review Manually</h3>
+          <button style={{background:'none',border:'none',fontSize:18,cursor:'pointer',color:'var(--text3)'}} onClick={()=>setManualModal(null)}>✕</button>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Location</label>
+          <select className="filter-select" style={{width:'100%'}} value={manualLoc} onChange={e=>setManualLoc(e.target.value)}>
+            {LOCATIONS.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Type</label>
+          <div className="toggle-group">
+            <button className={`toggle-btn ${manualType==='complaint'?'active':''}`} onClick={()=>setManualType('complaint')}>Complaint</button>
+            <button className={`toggle-btn ${manualType==='compliment'?'active':''}`} onClick={()=>setManualType('compliment')}>Compliment</button>
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Source</label>
+          <select className="filter-select" style={{width:'100%'}} value={manualSource} onChange={e=>setManualSource(e.target.value)}>
+            {['Email','Website','Phone','In-Person','Social Media','Other'].map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div style={{marginBottom:16}}>
+          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Review Text</label>
+          <textarea style={{width:'100%',padding:10,border:'1px solid var(--border)',borderRadius:'var(--r-sm)',resize:'vertical',minHeight:100,fontFamily:'var(--font)',fontSize:13}} value={manualText} onChange={e=>setManualText(e.target.value)} placeholder="Paste or type the customer feedback here..."/>
+        </div>
+        <div className="flex gap-2">
+          <button className="btn btn-primary" onClick={handleManualSubmit} disabled={!manualText.trim()}>Add Review</button>
+          <button className="btn btn-secondary" onClick={()=>setManualModal(null)}>Cancel</button>
+        </div>
+      </div>
+    </div>}
   </div>);
 }
 
@@ -1562,7 +1616,7 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
       <div className="card" style={{marginBottom:16}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>
           <div style={{width:40,height:40,borderRadius:'var(--r-sm)',background:'var(--red-soft)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-            <span style={{fontSize:18}}>⚡</span>
+            <span style={{fontSize:18}}>🔗</span>
           </div>
           <div style={{flex:1}}>
             <h3 style={{fontSize:15,fontWeight:700,marginBottom:2}}>Review Import Proxy</h3>
@@ -1856,7 +1910,7 @@ function fetchJustEatReviews(restaurantUrl) {
               }
             }catch(e){setToast('Import failed: '+e.message);setImportResults({total:0,errors:[e.message],details:{}})}
             setImporting(false);setImportStatus('');
-          }}>{importing?<span style={{display:'inline-block',width:14,height:14,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 1s linear infinite'}}/>:'⚡'} {importing?'Importing...':'Import Now'}</button>
+          }}>{importing?<span style={{display:'inline-block',width:14,height:14,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 1s linear infinite'}}/>:'🔄'} {importing?'Importing...':'Import Now'}</button>
           <button className="btn btn-secondary btn-sm" onClick={()=>{
             const data=getImportedReviews();
             const total=(data.complaints?.length||0)+(data.compliments?.length||0);
@@ -2161,7 +2215,7 @@ function App(){
     {toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}
     {emailModal&&<EmailModal emailData={emailModal} onClose={()=>setEmailModal(null)}/>}
     {pasteModal&&<PasteExtractModal platform={pasteModal.platform} locationId={pasteModal.locationId} onExtracted={handlePasteExtracted} onClose={()=>setPasteModal(null)}/>}
-    <aside className="sidebar"><div className="sidebar-logo"><FeedbackHubLogo size={42}/><div className="logo-text"><h1>{getBusinessName()}</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&urgentCount>0&&<span className="nav-badge">{urgentCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}{acct&&acct.logout&&<button className="nav-item" onClick={acct.logout} style={{marginTop:16,color:'var(--text3)',fontSize:12}}><span style={{fontSize:14}}>↩</span><span>Sign Out</span></button>}</nav></aside>
+    <aside className="sidebar"><div className="sidebar-logo"><FeedbackHubLogo size={42}/><div className="logo-text"><h1>{getBusinessName()}</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}{acct&&acct.logout&&<button className="nav-item" onClick={acct.logout} style={{marginTop:16,color:'var(--text3)',fontSize:12}}><span style={{fontSize:14}}>↩</span><span>Sign Out</span></button>}</nav></aside>
     <main className="main">{renderPage()}</main>
     <nav className="bottom-nav">{[{id:'dashboard',icon:I.dashboard,l:'Home'},{id:'reviews',icon:I.feed,l:'Reviews'},{id:'report',icon:I.report,l:'Report'},{id:'locations',icon:I.trophy,l:'Perform.'},{id:'mystery',icon:I.mystery,l:'Shopper'},{id:'settings',icon:I.settings,l:'More'}].map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.l}</span></button>)}</nav>
   </div>);
