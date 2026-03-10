@@ -216,6 +216,16 @@ const COMPLIMENT_DATA = [{"location": "Fulham", "date": "2024-01-12", "source": 
 /* ═══ MULTI-TENANT ACCOUNT SYSTEM ═══ */
 const ACCT_STORAGE='fhub_accounts';
 const SESSION_STORAGE='fhub_session';
+const API_BASE='https://feedback.agarden.cloud';
+async function apiFetch(path,opts={}){
+  const session=loadSession();
+  const headers={'Content-Type':'application/json',...(opts.headers||{})};
+  if(session&&session.email)headers['X-User-Email']=session.email;
+  else if(session&&session.accountId)headers['X-Account-Id']=session.accountId;
+  const resp=await fetch(API_BASE+path,{...opts,headers});
+  if(!resp.ok){const err=await resp.json().catch(()=>({error:'Request failed'}));throw new Error(err.error||'API error '+resp.status)}
+  return resp.json();
+}
 const COLORS_POOL=['#d4372c','#2563eb','#7c3aed','#16a34a','#d97706','#0891b2','#be185d','#e11d48','#0d9488','#7c2d12'];
 
 /* B Bagel — Alon's pre-configured account */
@@ -279,27 +289,52 @@ function LoginScreen({onLogin}){
   const [err,setErr]=useState('');
   const [loading,setLoading]=useState(false);
 
-  const handleLogin=()=>{
+  const handleLogin=async()=>{
     if(!email.trim()){setErr('Enter your email address');return}
-    const acct=findAccountByEmail(email);
-    if(acct){
-      saveSession({accountId:acct.id,email:email.toLowerCase().trim()});
-      onLogin();
-    }else{
-      setErr('No account found for this email. Create a new account below.');
-      setMode('signup');
-    }
+    setLoading(true);setErr('');
+    try{
+      const resp=await fetch(API_BASE+'/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.toLowerCase().trim()})});
+      if(resp.ok){
+        const d=await resp.json();
+        const localAcct={id:d.id,businessName:d.name,feedbackEmail:d.adminEmails[0]||email.toLowerCase().trim(),adminEmails:d.adminEmails,locations:d.locations||[],users:[{id:'u1',name:email.split('@')[0],email:email.toLowerCase().trim(),role:'Admin'}],hasEmbeddedData:d.id==='bbagel'};
+        const accts=loadAccounts();const idx=accts.findIndex(a=>a.id===localAcct.id);
+        if(idx>=0)accts[idx]={...accts[idx],...localAcct};else accts.push(localAcct);
+        saveAccounts(accts);
+        saveSession({accountId:localAcct.id,email:email.toLowerCase().trim()});
+        onLogin();
+      }else{
+        const acct=findAccountByEmail(email);
+        if(acct){saveSession({accountId:acct.id,email:email.toLowerCase().trim()});onLogin()}
+        else{setErr('No account found for this email. Create a new account below.');setMode('signup')}
+      }
+    }catch(e){
+      const acct=findAccountByEmail(email);
+      if(acct){saveSession({accountId:acct.id,email:email.toLowerCase().trim()});onLogin()}
+      else{setErr('Cannot connect to server. Please try again.')}
+    }finally{setLoading(false)}
   };
-  const handleSignup=()=>{
+  const handleSignup=async()=>{
     if(!email.trim()||!bizName.trim()){setErr('Fill in all fields');return}
-    const accts=loadAccounts();
-    if(accts.find(a=>a.adminEmails.some(e=>e.toLowerCase()===email.toLowerCase().trim()))){setErr('An account with this email already exists');return}
-    const id='acct_'+Date.now();
-    const newAcct={id,businessName:bizName.trim(),feedbackEmail:email.toLowerCase().trim(),adminEmails:[email.toLowerCase().trim()],locations:[],users:[{id:'u1',name:email.split('@')[0],email:email.toLowerCase().trim(),role:'Admin'}],hasEmbeddedData:false};
-    accts.push(newAcct);
-    saveAccounts(accts);
-    saveSession({accountId:id,email:email.toLowerCase().trim()});
-    onLogin();
+    setLoading(true);setErr('');
+    try{
+      const resp=await fetch(API_BASE+'/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:bizName.trim(),email:email.toLowerCase().trim()})});
+      if(resp.ok){
+        const d=await resp.json();
+        const newAcct={id:d.id,businessName:d.name,feedbackEmail:email.toLowerCase().trim(),adminEmails:d.adminEmails,locations:d.locations||[],users:[{id:'u1',name:email.split('@')[0],email:email.toLowerCase().trim(),role:'Admin'}],hasEmbeddedData:false};
+        const accts=loadAccounts();accts.push(newAcct);saveAccounts(accts);
+        saveSession({accountId:d.id,email:email.toLowerCase().trim()});
+        onLogin();
+      }else if(resp.status===409){setErr('An account with this email already exists')}
+      else{const err=await resp.json().catch(()=>({}));setErr(err.error||'Signup failed')}
+    }catch(e){
+      const accts=loadAccounts();
+      if(accts.find(a=>a.adminEmails.some(ae=>ae.toLowerCase()===email.toLowerCase().trim()))){setErr('An account with this email already exists');setLoading(false);return}
+      const id='acct_'+Date.now();
+      const newAcct={id,businessName:bizName.trim(),feedbackEmail:email.toLowerCase().trim(),adminEmails:[email.toLowerCase().trim()],locations:[],users:[{id:'u1',name:email.split('@')[0],email:email.toLowerCase().trim(),role:'Admin'}],hasEmbeddedData:false};
+      accts.push(newAcct);saveAccounts(accts);
+      saveSession({accountId:id,email:email.toLowerCase().trim()});
+      onLogin();
+    }finally{setLoading(false)}
   };
 
   return React.createElement('div',{style:{minHeight:'100vh',background:'linear-gradient(135deg,#1c1917 0%,#292524 50%,#1c1917 100%)',display:'flex',alignItems:'center',justifyContent:'center',padding:20}},
@@ -315,7 +350,7 @@ function LoginScreen({onLogin}){
           React.createElement('p',{style:{fontSize:13,color:'#78716c',marginBottom:20}},'Enter your admin email to access your account'),
           React.createElement('input',{type:'email',value:email,onChange:e=>{setEmail(e.target.value);setErr('')},onKeyDown:e=>e.key==='Enter'&&handleLogin(),placeholder:'your@email.com',style:{width:'100%',padding:'12px 16px',border:'1px solid #e7e5e4',borderRadius:10,fontSize:14,marginBottom:12,outline:'none',fontFamily:'var(--font)'}}),
           err&&React.createElement('div',{style:{color:'#d4372c',fontSize:12,marginBottom:12}},err),
-          React.createElement('button',{onClick:handleLogin,style:{width:'100%',padding:'12px',background:'#d4372c',color:'#fff',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'var(--font)'}},'Sign In'),
+          React.createElement('button',{onClick:handleLogin,disabled:loading,style:{width:'100%',padding:'12px',background:loading?'#999':'#d4372c',color:'#fff',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:loading?'wait':'pointer',fontFamily:'var(--font)'}},loading?'Signing in...':'Sign In'),
           React.createElement('div',{style:{marginTop:16,paddingTop:16,borderTop:'1px solid #e7e5e4'}},
             React.createElement('p',{style:{fontSize:12,color:'#a8a29e'}},"Don't have an account? "),
             React.createElement('button',{onClick:()=>{setMode('signup');setErr('')},style:{color:'#d4372c',fontWeight:600,fontSize:13,cursor:'pointer',background:'none',border:'none',fontFamily:'var(--font)'}},'Create one free')
@@ -617,10 +652,11 @@ function reviewFingerprint(r){
   return (r.location||'')+'|'+(r.date||'')+'|'+(r.source||'')+'|'+info;
 }
 
-/* Merge fetched reviews into localStorage, avoiding duplicates */
+/* Merge fetched reviews into localStorage, avoiding duplicates. Also syncs to API. */
 function mergeImportedReviews(newReviews, locationName, platformName){
   const existing=getImportedReviews();
   const allFingerprints=new Set();
+  const apiQueue=[];
 
   /* Fingerprint embedded data too */
   const embeddedComps=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
@@ -649,11 +685,14 @@ function mergeImportedReviews(newReviews, locationName, platformName){
       }else{
         existing.complaints.push({...review,action:'',manager:''});
       }
+      apiQueue.push({platform:platformName||'unknown',author:review.customer||'Anonymous',rating:r.rating||null,text:review.info||'',date:review.date,location:locationName||null,type:isCompliment?'compliment':'complaint'});
       added++;
     }
   });
 
   saveImportedReviews(existing);
+  /* Fire-and-forget API sync */
+  if(apiQueue.length>0){try{const s=loadSession();if(s&&s.email){fetch(API_BASE+'/api/reviews/bulk',{method:'POST',headers:{'Content-Type':'application/json','X-User-Email':s.email},body:JSON.stringify({reviews:apiQueue})}).catch(()=>{})}}catch(e){}}
   return added;
 }
 
@@ -2206,13 +2245,18 @@ function App(){
   };
   const handlePasteExtracted=(reviews)=>{
     const imported=getImportedReviews();
+    const apiQueue=[];
     reviews.forEach(r=>{
       const item={date:r.date,location:pasteModal.locationId,source:r.source,info:r.text,customer_name:r.author,rating:r.rating};
-      if(r.rating&&r.rating>=4||!r.rating){imported.compliments.push(item)}else{imported.complaints.push(item)}
+      const isCompliment=r.rating&&r.rating>=4||!r.rating;
+      if(isCompliment){imported.compliments.push(item)}else{imported.complaints.push(item)}
+      apiQueue.push({platform:r.source||pasteModal.platform,author:r.author||'Anonymous',rating:r.rating||null,text:r.text||'',date:r.date,location:pasteModal.locationId,type:isCompliment?'compliment':'complaint'});
     });
     saveImportedReviews(imported);
     setImportedData({...imported});
     setToast('Imported '+reviews.length+' reviews from '+pasteModal.platform);
+    /* API sync */
+    if(apiQueue.length>0){apiFetch('/api/reviews/bulk',{method:'POST',body:JSON.stringify({reviews:apiQueue})}).catch(()=>{})}
   };
 
   return(<div className="app">
@@ -2249,6 +2293,12 @@ function Root(){
     if(updated.locations&&updated.locations.length>0){LOCATIONS=updated.locations}
     else if(updated.hasEmbeddedData){LOCATIONS=BBAGEL_LOCATIONS}
     else{LOCATIONS=[]}
+    /* Sync to API */
+    const apiUp={};
+    if(updates.businessName!==undefined)apiUp.name=updates.businessName;
+    if(updates.locations!==undefined)apiUp.locations=updates.locations;
+    if(updates.adminEmails!==undefined)apiUp.adminEmails=updates.adminEmails;
+    if(Object.keys(apiUp).length>0)apiFetch('/api/account',{method:'PATCH',body:JSON.stringify(apiUp)}).catch(()=>{});
   };
 
   if(!loggedIn)return React.createElement(LoginScreen,{onLogin:handleLogin});
