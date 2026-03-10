@@ -797,9 +797,9 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
 /* ═══ DASHBOARD ═══ */
 function DashboardPage({complaints,compliments,onNavigate}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
-  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
-  const [timePeriod,setTimePeriod]=useState('lastweek');
+  const [dateFrom,setDateFrom]=useState(()=>new Date('2024-01-01'));
+  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [timePeriod,setTimePeriod]=useState('all');
   const setTime=(key,from,to)=>{setTimePeriod(key);setDateFrom(from);setDateTo(to)};
   const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[complaints,dateFrom,dateTo]);
   const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[compliments,dateFrom,dateTo]);
@@ -827,6 +827,7 @@ function DashboardPage({complaints,compliments,onNavigate}){
         <button className={`time-chip ${timePeriod==='lastweek'?'active':''}`} onClick={()=>setTime('lastweek',lastWeekStart(),lastWeekEnd())}>Last Week</button>
         <button className={`time-chip ${timePeriod==='30d'?'active':''}`} onClick={()=>setTime('30d',daysAgo(30),new Date())}>Last 30 Days</button>
         <button className={`time-chip ${timePeriod==='month'?'active':''}`} onClick={()=>setTime('month',startOfMonth(),new Date())}>This Month</button>
+        <button className={`time-chip ${timePeriod==='all'?'active':''}`} onClick={()=>setTime('all',new Date('2024-01-01'),new Date())}>All Time</button>
         <button className={`time-chip ${timePeriod==='custom'?'active':''}`} onClick={()=>{setTimePeriod('custom');setShowCal(true)}} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
       </div>
       {showCal&&<CalendarPicker onClose={()=>setShowCal(false)} onSelect={(s,e)=>{setDateFrom(s);setDateTo(new Date(e.getTime()+86399999));setTimePeriod('custom')}} initStart={dateFrom} initEnd={dateTo}/>}
@@ -850,8 +851,10 @@ function DashboardPage({complaints,compliments,onNavigate}){
 /* ═══ REVIEWS PAGE ═══ */
 function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActionStates,setToast,setEmailModal}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
-  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [dateFrom,setDateFrom]=useState(()=>new Date('2024-01-01'));
+  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [timePeriod,setTimePeriod]=useState('all');
+  const setTime=(key,from,to)=>{setTimePeriod(key);setDateFrom(from);setDateTo(to);setPage(1)};
   const [location,setLocation]=useState('');
   const [type,setType]=useState('');
   const [source,setSource]=useState('');
@@ -885,12 +888,13 @@ function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActi
     <div>
       <div className="page-header"><h2>Reviews</h2><p>{fmt(dateFrom)} – {fmt(dateTo)} · {all.length} results</p></div>
       <div className="time-bar">
-        <button className={`time-chip active`} onClick={()=>{setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
-        <button className="time-chip" onClick={()=>{setDateFrom(daysAgo(30));setDateTo(new Date())}}>Last 30 Days</button>
-        <button className="time-chip" onClick={()=>{setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
-        <button className="time-chip" onClick={()=>setShowCal(true)} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
+        <button className={`time-chip ${timePeriod==='lastweek'?'active':''}`} onClick={()=>setTime('lastweek',lastWeekStart(),lastWeekEnd())}>Last Week</button>
+        <button className={`time-chip ${timePeriod==='30d'?'active':''}`} onClick={()=>setTime('30d',daysAgo(30),new Date())}>Last 30 Days</button>
+        <button className={`time-chip ${timePeriod==='month'?'active':''}`} onClick={()=>setTime('month',startOfMonth(),new Date())}>This Month</button>
+        <button className={`time-chip ${timePeriod==='all'?'active':''}`} onClick={()=>setTime('all',new Date('2024-01-01'),new Date())}>All Time</button>
+        <button className={`time-chip ${timePeriod==='custom'?'active':''}`} onClick={()=>{setTimePeriod('custom');setShowCal(true)}} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
       </div>
-      {showCal&&<CalendarPicker onClose={()=>setShowCal(false)} onSelect={(s,e)=>{setDateFrom(s);setDateTo(new Date(e.getTime()+86399999))}} initStart={dateFrom} initEnd={dateTo}/>}
+      {showCal&&<CalendarPicker onClose={()=>setShowCal(false)} onSelect={(s,e)=>{setDateFrom(s);setDateTo(new Date(e.getTime()+86399999));setTimePeriod('custom')}} initStart={dateFrom} initEnd={dateTo}/>}
       <div className="filter-bar">
         <div className="toggle-group">
           <button className={`toggle-btn ${feedType==='all'?'active':''}`} onClick={()=>{setFeedType('all');setPage(1)}}>All</button>
@@ -1811,7 +1815,7 @@ function App(){
       }
     }).catch(()=>{});
   },[]);
-  const urgentCount=complaints.filter(c=>flagReview(c.info)==='urgent').length;
+  const importedCount=(importedData.complaints||[]).length+(importedData.compliments||[]).length;
   const activeActions=enabledActions.filter(a=>!a.disabled);
 
   const renderPage=()=>{
@@ -1830,7 +1834,7 @@ function App(){
   return(<div className="app">
     {toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}
     {emailModal&&<EmailModal emailData={emailModal} onClose={()=>setEmailModal(null)}/>}
-    <aside className="sidebar"><div className="sidebar-logo"><div className="logo-mark">B</div><div className="logo-text"><h1>B Bagel</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&urgentCount>0&&<span className="nav-badge">{urgentCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav></aside>
+    <aside className="sidebar"><div className="sidebar-logo"><div className="logo-mark">B</div><div className="logo-text"><h1>B Bagel</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&importedCount>0&&<span className="nav-badge" style={{background:'#16a34a'}}>{importedCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav></aside>
     <main className="main">{renderPage()}</main>
     <nav className="bottom-nav">{[{id:'dashboard',icon:I.dashboard,l:'Home'},{id:'reviews',icon:I.feed,l:'Reviews'},{id:'report',icon:I.report,l:'Report'},{id:'locations',icon:I.trophy,l:'Perform.'},{id:'mystery',icon:I.mystery,l:'Shopper'},{id:'settings',icon:I.settings,l:'More'}].map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.l}</span></button>)}</nav>
   </div>);
