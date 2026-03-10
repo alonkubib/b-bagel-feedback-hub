@@ -1333,7 +1333,7 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
           </ol>
           <button className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={()=>{
             const script=`// B Bagel Review Proxy — Google Apps Script
-// Deploy as Web App with access: "Anyone"
+// Deploy as Web App: Execute as "Me", Access: "Anyone"
 
 function doGet(e) {
   var p = e.parameter;
@@ -1341,6 +1341,7 @@ function doGet(e) {
   var url = p.url || '';
   var apiKey = p.apiKey || '';
   var since = p.since || '';
+  var debug = p.debug === '1';
 
   try {
     var reviews = [];
@@ -1348,18 +1349,17 @@ function doGet(e) {
     if (platform === 'google') {
       reviews = fetchGoogleReviews(url, apiKey);
     } else if (platform === 'trustpilot') {
-      reviews = fetchTrustpilotReviews(url);
+      reviews = fetchTrustpilotReviews(url, debug);
     } else if (platform === 'tripadvisor') {
-      reviews = fetchTripAdvisorReviews(url);
+      reviews = fetchTripAdvisorReviews(url, debug);
     } else if (platform === 'deliveroo') {
-      reviews = fetchDeliverooReviews(url);
+      reviews = fetchDeliverooReviews(url, debug);
     } else if (platform === 'justeat') {
-      reviews = fetchJustEatReviews(url);
+      reviews = fetchJustEatReviews(url, debug);
     } else {
       return jsonResp({error: 'Unknown platform: ' + platform});
     }
 
-    // Filter by date if since is provided
     if (since) {
       var sinceDate = new Date(since);
       reviews = reviews.filter(function(r) {
@@ -1369,7 +1369,7 @@ function doGet(e) {
 
     return jsonResp({reviews: reviews, count: reviews.length});
   } catch(err) {
-    return jsonResp({error: err.message});
+    return jsonResp({error: err.message, stack: err.stack});
   }
 }
 
@@ -1378,14 +1378,48 @@ function jsonResp(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+// Helper: extract review objects from JSON-LD, handling @graph arrays
+function extractReviewsFromLD(html, sourceName, debug) {
+  var reviews = [];
+  var debugInfo = {ldBlocks: 0, entities: 0, reviewEntities: 0, htmlLen: html.length};
+  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\s\\S]*?<\\/script>/gi) || [];
+  debugInfo.ldBlocks = ldMatches.length;
+
+  ldMatches.forEach(function(m) {
+    try {
+      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
+      var data = JSON.parse(json);
+      var entities = [data];
+      if (data['@graph'] && Array.isArray(data['@graph'])) {
+        entities = entities.concat(data['@graph']);
+      }
+      debugInfo.entities += entities.length;
+      entities.forEach(function(entity) {
+        if (entity.review) {
+          debugInfo.reviewEntities++;
+          var revArray = Array.isArray(entity.review) ? entity.review : [entity.review];
+          revArray.forEach(function(r) {
+            reviews.push({
+              date: r.datePublished || '',
+              rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
+              author: r.author ? (typeof r.author === 'string' ? r.author : r.author.name || 'Anonymous') : 'Anonymous',
+              text: r.reviewBody || r.name || r.description || '',
+              source: sourceName
+            });
+          });
+        }
+      });
+    } catch(e) {
+      debugInfo.parseError = e.message;
+    }
+  });
+
+  if (debug) { reviews._debug = debugInfo; }
+  return reviews;
+}
+
 function fetchGoogleReviews(placeId, apiKey) {
-  if (!apiKey) {
-    // Fallback: scrape from Google Maps (limited)
-    var url = 'https://www.google.com/maps/place/?q=place_id:' + placeId;
-    var html = UrlFetchApp.fetch(url, {muteHttpExceptions: true}).getContentText();
-    return parseGoogleHTML(html);
-  }
-  // Use Places API
+  if (!apiKey) return [];
   var apiUrl = 'https://maps.googleapis.com/maps/api/place/details/json?place_id=' + placeId + '&fields=reviews&key=' + apiKey;
   var resp = UrlFetchApp.fetch(apiUrl, {muteHttpExceptions: true});
   var data = JSON.parse(resp.getContentText());
@@ -1403,119 +1437,55 @@ function fetchGoogleReviews(placeId, apiKey) {
   return [];
 }
 
-function parseGoogleHTML(html) {
-  // Basic extraction from Google Maps HTML — handles common review patterns
-  var reviews = [];
-  try {
-    var blocks = html.split(/class="[^"]*review[^"]*"/gi);
-    // Google Maps HTML is heavily obfuscated; this is best-effort
-    // For reliable results, use the Places API with an API key
-  } catch(e) {}
-  return reviews;
-}
-
-function fetchTrustpilotReviews(businessUrl) {
-  var reviews = [];
-  // Trustpilot has structured data in their pages
+function fetchTrustpilotReviews(businessUrl, debug) {
+  var allReviews = [];
   for (var page = 1; page <= 3; page++) {
     var url = businessUrl + (page > 1 ? '?page=' + page : '');
     var html = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-    // Extract JSON-LD structured data
-    var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-    ldMatches.forEach(function(m) {
+    var pageReviews = extractReviewsFromLD(html, 'Trustpilot', debug);
+    allReviews = allReviews.concat(pageReviews);
+    if (pageReviews.length === 0 && page > 1) break;
+  }
+  // If JSON-LD failed, try __NEXT_DATA__ fallback
+  if (allReviews.length === 0) {
+    var html = UrlFetchApp.fetch(businessUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
+    var nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\\s\\S]*?)<\\/script>/i);
+    if (nextMatch) {
       try {
-        var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-        var data = JSON.parse(json);
-        if (data['@type'] === 'LocalBusiness' && data.review) {
-          (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-            reviews.push({
-              date: r.datePublished || '',
-              rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-              author: r.author ? r.author.name : 'Anonymous',
-              text: r.reviewBody || '',
+        var nextData = JSON.parse(nextMatch[1]);
+        var pageProps = nextData.props && nextData.props.pageProps;
+        if (pageProps && pageProps.reviews) {
+          (Array.isArray(pageProps.reviews) ? pageProps.reviews : []).forEach(function(r) {
+            allReviews.push({
+              date: r.dates && r.dates.publishedDate ? r.dates.publishedDate.split('T')[0] : '',
+              rating: r.rating || 5,
+              author: r.consumer ? r.consumer.displayName : 'Anonymous',
+              text: r.text || r.title || '',
               source: 'Trustpilot'
             });
           });
         }
       } catch(e) {}
-    });
-
-    // Also try parsing review cards from HTML
-    var reviewBlocks = html.split(/data-review-id/gi);
-    if (reviewBlocks.length <= 1 && reviews.length === 0) {
-      // Try alternate pattern
-      var stars = html.match(/data-service-review-rating="(\\\\d)"/gi) || [];
-      var texts = html.match(/data-service-review-text-typography[^>]*>([^<]+)</gi) || [];
-      var dates = html.match(/datetime="([^"]+)"/gi) || [];
-      var names = html.match(/data-consumer-name-typography[^>]*>([^<]+)</gi) || [];
     }
   }
-  return reviews;
+  return allReviews;
 }
 
-function fetchTripAdvisorReviews(listingUrl) {
-  var reviews = [];
+function fetchTripAdvisorReviews(listingUrl, debug) {
   var html = UrlFetchApp.fetch(listingUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-  // TripAdvisor uses JSON-LD and structured review data
-  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-  ldMatches.forEach(function(m) {
-    try {
-      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-      var data = JSON.parse(json);
-      if (data.review) {
-        (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-          reviews.push({
-            date: r.datePublished || '',
-            rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-            author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
-            text: r.reviewBody || r.name || '',
-            source: 'TripAdvisor'
-          });
-        });
-      }
-    } catch(e) {}
-  });
-  return reviews;
+  return extractReviewsFromLD(html, 'TripAdvisor', debug);
 }
 
-function fetchDeliverooReviews(restaurantUrl) {
+function fetchDeliverooReviews(restaurantUrl, debug) {
   var reviews = [];
   try {
     var html = UrlFetchApp.fetch(restaurantUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-    // Deliveroo embeds restaurant data as JSON in script tags
-    var jsonMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-    jsonMatches.forEach(function(m) {
-      try {
-        var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-        var data = JSON.parse(json);
-        if (data.review) {
-          (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-            reviews.push({
-              date: r.datePublished || '',
-              rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-              author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
-              text: r.reviewBody || r.description || '',
-              source: 'Deliveroo'
-            });
-          });
-        }
-        // Also check aggregateRating
-        if (data.aggregateRating && !reviews.length) {
-          // No individual reviews in JSON-LD, try parsing page
-        }
-      } catch(e) {}
-    });
-
-    // Deliveroo often puts review data in __NEXT_DATA__ or similar hydration scripts
+    reviews = extractReviewsFromLD(html, 'Deliveroo', debug);
     if (reviews.length === 0) {
-      var nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\\\\s\\\\S]*?)<\\/script>/i);
+      var nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\\s\\S]*?)<\\/script>/i);
       if (nextDataMatch) {
         try {
           var nextData = JSON.parse(nextDataMatch[1]);
-          // Navigate the Next.js data structure to find reviews
           var props = nextData.props && nextData.props.pageProps;
           if (props) {
             var menuPage = props.restaurant || props.menu || props;
@@ -1535,37 +1505,15 @@ function fetchDeliverooReviews(restaurantUrl) {
         } catch(e) {}
       }
     }
-  } catch(e) {
-    // Deliveroo may block scraping — return empty rather than error
-  }
+  } catch(e) {}
   return reviews;
 }
 
-function fetchJustEatReviews(restaurantUrl) {
-  var reviews = [];
+function fetchJustEatReviews(restaurantUrl, debug) {
   var html = UrlFetchApp.fetch(restaurantUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-  // Just Eat embeds review data in the page
-  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-  ldMatches.forEach(function(m) {
-    try {
-      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-      var data = JSON.parse(json);
-      if (data.review) {
-        (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-          reviews.push({
-            date: r.datePublished || '',
-            rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-            author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
-            text: r.reviewBody || '',
-            source: 'Just Eat'
-          });
-        });
-      }
-    } catch(e) {}
-  });
-  return reviews;
+  return extractReviewsFromLD(html, 'Just Eat', debug);
 }`;
+
             navigator.clipboard.writeText(script).then(()=>setToast('Proxy script copied to clipboard!')).catch(()=>{
               const ta=document.createElement('textarea');ta.value=script;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);setToast('Proxy script copied!');
             });
