@@ -288,36 +288,43 @@ const REVIEW_PLATFORMS=[
 /* Default review platform URLs for all B Bagel locations (pre-filled from public listings) */
 const DEFAULT_LOCATION_URLS={
   fulham:{
+    google:'ChIJVe-YaxkPdkgR2sYvAUMPDT0',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d9855458-Reviews-B_Bagel_Fulham-London_England.html',
     deliveroo:'https://deliveroo.co.uk/menu/london/chelsea/b-bagel-bakery'
   },
   soho:{
+    google:'ChIJc4bMxr0cdkgRBaRJ1KnT7N0',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d18935812-Reviews-B_Bagel_Soho-London_England.html',
     deliveroo:'https://deliveroo.co.uk/menu/london/soho/b-bagel-bakery-bar-soho'
   },
   tcr:{
+    google:'ChIJRe3DG7YcdkgRDk3M_3UNz5c',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d23752937-Reviews-B_Bagel_Tottenham_Court_Road-London_England.html',
     deliveroo:'https://deliveroo.co.uk/menu/london/tottenham-court-road/b-bagel-bakery-bar-tottenham-court-road'
   },
   camden:{
+    google:'ChIJo7F0I7EbdkgRaJJEw5a-JOc',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d26831811-Reviews-B_Bagel_Camden-London_England.html',
     deliveroo:'https://deliveroo.co.uk/menu/London/camden/b-bagel-camden'
   },
   strand:{
+    google:'ChIJhyUEyRMFdkgR-TQ-UDz8d-k',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     tripadvisor:'https://www.tripadvisor.com/Restaurant_Review-g186338-d33011712-Reviews-B_Bagel_Strand-London_England.html',
     deliveroo:'https://deliveroo.co.uk/menu/london/strand/b-bagel-strand'
   },
   swains:{
+    google:'ChIJNdvFUlUbdkgRvHvh_DSNRZE',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d33011707-Reviews-B_Bagel_Swain_s_Lane-London_England.html',
     deliveroo:'https://deliveroo.co.uk/menu/London/highgate/b-bagel-swains-lane'
   },
   nos:{
+    google:'ChIJ1wv0PbYcdkgRBOXIfUPH0gU',
     trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
     deliveroo:'https://deliveroo.co.uk/menu/london/bloomsbury/b-bagel-new-oxford-street'
   }
@@ -334,8 +341,9 @@ const DEFAULT_LOCATION_URLS={
 function getReviewConfig(){
   try{
     const saved=JSON.parse(localStorage.getItem('bbagel_review_sources'))||{};
-    /* Auto-merge defaults for any locations missing URLs */
-    if(!saved._defaultsMerged){
+    /* Auto-merge defaults — re-merge if version changed (e.g. google IDs added) */
+    const DEFAULTS_VERSION=2;
+    if(!saved._defaultsMerged||saved._defaultsVersion!==DEFAULTS_VERSION){
       if(!saved.locations) saved.locations={};
       Object.keys(DEFAULT_LOCATION_URLS).forEach(locId=>{
         if(!saved.locations[locId]) saved.locations[locId]={};
@@ -344,6 +352,7 @@ function getReviewConfig(){
         });
       });
       saved._defaultsMerged=true;
+      saved._defaultsVersion=DEFAULTS_VERSION;
       localStorage.setItem('bbagel_review_sources',JSON.stringify(saved));
     }
     return saved;
@@ -768,7 +777,7 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
       {/* Action area */}
       <div className="suggestion-area" style={{marginTop:12,padding:14,background:'var(--surface2)',border:'1px solid var(--border)',borderRadius:'var(--r-sm)'}}>
         {!cardState.status&&<>
-          <div className="suggestion-label">{I.bolt} Suggested Action</div>
+          <div className="suggestion-label">Suggested Action</div>
           <div className="suggestion-actions">
             {actions.map(a=><button key={a.id} className="btn-action" onClick={()=>handleAction(a)}>
               <span>{a.icon}</span> {a.label}
@@ -795,16 +804,33 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
 }
 
 /* ═══ DASHBOARD ═══ */
-function DashboardPage({complaints,compliments,onNavigate}){
+function DashboardPage({complaints,compliments,onNavigate,onImportComplete}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>new Date('2024-01-01'));
-  const [dateTo,setDateTo]=useState(()=>new Date());
-  const [timePeriod,setTimePeriod]=useState('all');
+  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
+  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [timePeriod,setTimePeriod]=useState('lastweek');
   const setTime=(key,from,to)=>{setTimePeriod(key);setDateFrom(from);setDateTo(to)};
   const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[complaints,dateFrom,dateTo]);
   const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[compliments,dateFrom,dateTo]);
   const urgent=fc.filter(c=>flagReview(c.info)==='urgent').length;
   const pct=fc.length+fk.length?Math.round(fk.length/(fc.length+fk.length)*100):0;
+
+  /* Import status */
+  const importCfg=getReviewConfig();
+  const hasProxy=!!importCfg.proxyUrl;
+  const importedStore=getImportedReviews();
+  const totalImported=(importedStore.complaints?.length||0)+(importedStore.compliments?.length||0);
+  const [importing,setImporting]=useState(false);
+  const [importMsg,setImportMsg]=useState('');
+  const doImport=async()=>{
+    setImporting(true);setImportMsg('Importing...');
+    try{
+      const result=await runFullImport();
+      setImportMsg(result.total>0?'Imported '+result.total+' new reviews':'No new reviews found');
+      if(result.total>0&&onImportComplete) onImportComplete();
+    }catch(e){setImportMsg('Error: '+e.message)}
+    setImporting(false);
+  };
 
   /* Chart */
   const chartRef=useRef(null);const chartInst=useRef(null);
@@ -823,6 +849,21 @@ function DashboardPage({complaints,compliments,onNavigate}){
   return(
     <div>
       <div className="page-header"><h2>Dashboard</h2><p>{fmt(dateFrom)} – {fmt(dateTo)}</p></div>
+
+      {/* Import Engine Bar */}
+      <div className="card" style={{marginBottom:16,background:'linear-gradient(135deg,#1e293b,#334155)',color:'#fff',border:'none'}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
+          <div>
+            <div style={{fontSize:14,fontWeight:700}}>Review Import</div>
+            <div style={{fontSize:11,opacity:.8}}>{hasProxy?<span>● Proxy connected · {totalImported} imported</span>:<span>○ Proxy not set — <span style={{textDecoration:'underline',cursor:'pointer'}} onClick={()=>onNavigate('settings')}>configure in Settings</span></span>}</div>
+          </div>
+          <div className="flex gap-2" style={{alignItems:'center'}}>
+            {importMsg&&<span style={{fontSize:11,opacity:.8}}>{importMsg}</span>}
+            {hasProxy&&<button className="btn btn-sm" style={{background:'#fff',color:'#1e293b',fontWeight:700,border:'none'}} onClick={doImport} disabled={importing}>{importing?'Importing...':'Import Now'}</button>}
+          </div>
+        </div>
+      </div>
+
       <div className="time-bar">
         <button className={`time-chip ${timePeriod==='lastweek'?'active':''}`} onClick={()=>setTime('lastweek',lastWeekStart(),lastWeekEnd())}>Last Week</button>
         <button className={`time-chip ${timePeriod==='30d'?'active':''}`} onClick={()=>setTime('30d',daysAgo(30),new Date())}>Last 30 Days</button>
@@ -838,10 +879,10 @@ function DashboardPage({complaints,compliments,onNavigate}){
         <div className="kpi"><div className="kpi-label">Satisfaction</div><div className="kpi-value">{pct}%</div></div>
       </div>
       <div className="chart-wrap"><div className="chart-title">Feedback Trend</div><div style={{height:260}}><canvas ref={chartRef}/></div></div>
-      <div className="card" style={{cursor:'pointer'}} onClick={()=>onNavigate('reviews')}>
+      <div className="card" style={{cursor:'pointer',background:'linear-gradient(135deg,#fef3c7,#fde68a)',border:'2px solid #f59e0b'}} onClick={()=>onNavigate('reviews')}>
         <div className="flex items-center justify-between">
-          <div><div className="text-sm font-bold">Recent Reviews</div><div className="text-xs text-muted mt-2">{fc.length+fk.length} reviews in period</div></div>
-          <span style={{fontSize:20}}>→</span>
+          <div><div style={{fontSize:15,fontWeight:800,color:'#92400e'}}>Recent Reviews</div><div style={{fontSize:12,color:'#b45309',marginTop:4,fontWeight:600}}>{fc.length+fk.length} reviews in period — click to view all</div></div>
+          <span style={{fontSize:24,color:'#92400e'}}>→</span>
         </div>
       </div>
     </div>
@@ -851,9 +892,9 @@ function DashboardPage({complaints,compliments,onNavigate}){
 /* ═══ REVIEWS PAGE ═══ */
 function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActionStates,setToast,setEmailModal}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>new Date('2024-01-01'));
-  const [dateTo,setDateTo]=useState(()=>new Date());
-  const [timePeriod,setTimePeriod]=useState('all');
+  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
+  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [timePeriod,setTimePeriod]=useState('lastweek');
   const setTime=(key,from,to)=>{setTimePeriod(key);setDateFrom(from);setDateTo(to);setPage(1)};
   const [location,setLocation]=useState('');
   const [type,setType]=useState('');
@@ -1152,12 +1193,12 @@ function IntegrationsPage({onNavigate}){
   };
 
   const ints=[
-    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',desc:'Public Google reviews via Places API or scraping.',public:true},
+    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',desc:'Google reviews via Places API. Requires a Google API key in Settings.',public:true},
     {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',desc:'Public Trustpilot reviews scraped from business page.',public:true},
     {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',desc:'Public TripAdvisor reviews from listing page.',public:true},
     {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',desc:'Deliveroo reviews (public page scraping).',public:false},
     {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',desc:'Just Eat reviews from restaurant page.',public:true},
-    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',desc:'Feedback via email — manually added.',public:true},
+    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',desc:'Feedback via email — manually added via Settings > Review Sources.',public:true,manual:true},
   ];
 
   const imported=getImportedReviews();
@@ -1185,7 +1226,8 @@ function IntegrationsPage({onNavigate}){
             <span className={`int-status ${st.status==='connected'?'int-connected':'int-disconnected'}`}>
               {st.status==='connected'?'● '+st.label:'○ '+st.label}
             </span>
-            {!i.public&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'var(--amber-soft)',color:'var(--amber)'}}>Login may be needed</span>}
+            {!i.public&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'var(--amber-soft)',color:'var(--amber)'}}>Requires login — not auto-importable</span>}
+            {i.manual&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'#f3effe',color:'#8b5cf6'}}>Manual entry only</span>}
           </div>
         </div>
       </div>;
@@ -1815,12 +1857,17 @@ function App(){
       }
     }).catch(()=>{});
   },[]);
-  const importedCount=(importedData.complaints||[]).length+(importedData.compliments||[]).length;
+  /* Badge: count reviews from last week onwards (new/unseen) */
+  const badgeCutoff=lastWeekStart();
+  const newReviewCount=useMemo(()=>{
+    const all=[...complaints,...compliments];
+    return all.filter(r=>{const d=parseDate(r.date);return d&&d>=badgeCutoff}).length;
+  },[complaints,compliments,badgeCutoff]);
   const activeActions=enabledActions.filter(a=>!a.disabled);
 
   const renderPage=()=>{
     switch(page){
-      case 'dashboard':return <DashboardPage complaints={complaints} compliments={compliments} onNavigate={setPage}/>;
+      case 'dashboard':return <DashboardPage complaints={complaints} compliments={compliments} onNavigate={setPage} onImportComplete={()=>setImportedData(getImportedReviews())}/>;
       case 'reviews':return <ReviewsPage complaints={complaints} compliments={compliments} enabledActions={activeActions} actionStates={actionStates} setActionStates={setActionStates} setToast={setToast} setEmailModal={setEmailModal}/>;
       case 'report':return <ReportPage complaints={complaints} compliments={compliments}/>;
       case 'locations':return <LocationsPage complaints={complaints} compliments={compliments}/>;
@@ -1834,7 +1881,7 @@ function App(){
   return(<div className="app">
     {toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}
     {emailModal&&<EmailModal emailData={emailModal} onClose={()=>setEmailModal(null)}/>}
-    <aside className="sidebar"><div className="sidebar-logo"><div className="logo-mark">B</div><div className="logo-text"><h1>B Bagel</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&importedCount>0&&<span className="nav-badge" style={{background:'#16a34a'}}>{importedCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav></aside>
+    <aside className="sidebar"><div className="sidebar-logo"><div className="logo-mark">B</div><div className="logo-text"><h1>B Bagel</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&newReviewCount>0&&<span className="nav-badge" style={{background:'#2563eb'}}>{newReviewCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav></aside>
     <main className="main">{renderPage()}</main>
     <nav className="bottom-nav">{[{id:'dashboard',icon:I.dashboard,l:'Home'},{id:'reviews',icon:I.feed,l:'Reviews'},{id:'report',icon:I.report,l:'Report'},{id:'locations',icon:I.trophy,l:'Perform.'},{id:'mystery',icon:I.mystery,l:'Shopper'},{id:'settings',icon:I.settings,l:'More'}].map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.l}</span></button>)}</nav>
   </div>);
