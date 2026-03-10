@@ -285,6 +285,44 @@ const REVIEW_PLATFORMS=[
   {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',fieldLabel:'Just Eat Restaurant URL',fieldPlaceholder:'e.g. https://www.just-eat.co.uk/restaurants-b-bagel-...',fieldHelp:'Your Just Eat restaurant listing URL',public:true},
 ];
 
+/* Default review platform URLs for all B Bagel locations (pre-filled from public listings) */
+const DEFAULT_LOCATION_URLS={
+  fulham:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d9855458-Reviews-B_Bagel_Fulham-London_England.html',
+    deliveroo:'https://deliveroo.co.uk/menu/london/chelsea/b-bagel-bakery'
+  },
+  soho:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d18935812-Reviews-B_Bagel_Soho-London_England.html',
+    deliveroo:'https://deliveroo.co.uk/menu/london/soho/b-bagel-bakery-bar-soho'
+  },
+  tcr:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d23752937-Reviews-B_Bagel_Tottenham_Court_Road-London_England.html',
+    deliveroo:'https://deliveroo.co.uk/menu/london/tottenham-court-road/b-bagel-bakery-bar-tottenham-court-road'
+  },
+  camden:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d26831811-Reviews-B_Bagel_Camden-London_England.html',
+    deliveroo:'https://deliveroo.co.uk/menu/London/camden/b-bagel-camden'
+  },
+  strand:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    tripadvisor:'https://www.tripadvisor.com/Restaurant_Review-g186338-d33011712-Reviews-B_Bagel_Strand-London_England.html',
+    deliveroo:'https://deliveroo.co.uk/menu/london/strand/b-bagel-strand'
+  },
+  swains:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    tripadvisor:'https://www.tripadvisor.co.uk/Restaurant_Review-g186338-d33011707-Reviews-B_Bagel_Swain_s_Lane-London_England.html',
+    deliveroo:'https://deliveroo.co.uk/menu/London/highgate/b-bagel-swains-lane'
+  },
+  nos:{
+    trustpilot:'https://uk.trustpilot.com/review/www.bbagel.co.uk',
+    deliveroo:'https://deliveroo.co.uk/menu/london/bloomsbury/b-bagel-new-oxford-street'
+  }
+};
+
 /* Saved config shape in localStorage('bbagel_review_sources'):
    { proxyUrl: 'https://script.google.com/macros/s/.../exec',
      googleApiKey: '',
@@ -294,7 +332,22 @@ const REVIEW_PLATFORMS=[
 */
 
 function getReviewConfig(){
-  try{return JSON.parse(localStorage.getItem('bbagel_review_sources'))||{}}catch(e){return{}}
+  try{
+    const saved=JSON.parse(localStorage.getItem('bbagel_review_sources'))||{};
+    /* Auto-merge defaults for any locations missing URLs */
+    if(!saved._defaultsMerged){
+      if(!saved.locations) saved.locations={};
+      Object.keys(DEFAULT_LOCATION_URLS).forEach(locId=>{
+        if(!saved.locations[locId]) saved.locations[locId]={};
+        Object.entries(DEFAULT_LOCATION_URLS[locId]).forEach(([platform,url])=>{
+          if(!saved.locations[locId][platform]&&url) saved.locations[locId][platform]=url;
+        });
+      });
+      saved._defaultsMerged=true;
+      localStorage.setItem('bbagel_review_sources',JSON.stringify(saved));
+    }
+    return saved;
+  }catch(e){return{locations:JSON.parse(JSON.stringify(DEFAULT_LOCATION_URLS))}}
 }
 function saveReviewConfig(cfg){
   localStorage.setItem('bbagel_review_sources',JSON.stringify(cfg));
