@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-B Bagel Feedback Hub — Complete rebuild with:
-1. Smart action system with email workflow (feedback@bbagel.co.uk)
-2. Action status tracking on review cards (Pending → Sent → Replied)
-3. Email modal popup showing sent email + reply
-4. Configurable actions in Settings (add/remove)
-5. Store opening dates + normalized performance scoring
+Feedback Hub — Multi-tenant customer feedback management platform.
+Features: review import, action tracking, email workflow, mystery shopper,
+multi-account system with email-based login, paste-and-extract for
+authenticated platforms (Deliveroo, TripAdvisor).
 """
 
 import json, os
@@ -24,7 +22,7 @@ html = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>B Bagel — Feedback Hub</title>
+<title>Feedback Hub</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;0,9..40,800;1,9..40,400&display=swap');
@@ -229,13 +227,230 @@ a{text-decoration:none;color:inherit}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.6/babel.min.js"></script>
 <script type="text/babel">
-const {useState,useEffect,useMemo,useRef,useCallback}=React;
+const {useState,useEffect,useMemo,useRef,useCallback,createContext,useContext}=React;
 
 const COMPLAINT_DATA = ''' + complaint_json + r''';
 const COMPLIMENT_DATA = ''' + compliment_json + r''';
 
-/* ═══ LOCATIONS with opening dates ═══ */
-const LOCATIONS=[
+/* ═══ MULTI-TENANT ACCOUNT SYSTEM ═══ */
+const ACCT_STORAGE='fhub_accounts';
+const SESSION_STORAGE='fhub_session';
+const COLORS_POOL=['#d4372c','#2563eb','#7c3aed','#16a34a','#d97706','#0891b2','#be185d','#e11d48','#0d9488','#7c2d12'];
+
+/* B Bagel — Alon's pre-configured account */
+const BBAGEL_ACCOUNT={
+  id:'bbagel',
+  businessName:'B Bagel',
+  feedbackEmail:'feedback@bbagel.co.uk',
+  adminEmails:['yoav@bbagel.co.uk','rachel@bbagel.co.uk','alonkubi@gmail.com'],
+  locations:[
+    {id:'fulham',name:'Fulham',address:'236D Fulham Rd, SW10 9NB',color:'#d4372c',openedDate:'2019-03-01'},
+    {id:'soho',name:'Soho',address:'18 Wardour St, W1D 6QJ',color:'#2563eb',openedDate:'2020-06-01'},
+    {id:'tcr',name:'TCR',address:'Tottenham Court Road',color:'#7c3aed',openedDate:'2021-04-01'},
+    {id:'camden',name:'Camden',address:'Camden High St, NW1',color:'#16a34a',openedDate:'2022-02-01'},
+    {id:'strand',name:'Strand',address:'The Strand, WC2R',color:'#d97706',openedDate:'2023-01-01'},
+    {id:'swains',name:'Swains Lane',address:'Swains Lane, N6',color:'#0891b2',openedDate:'2023-06-01'},
+    {id:'nos',name:'New Oxford St',address:'52 New Oxford St, WC1A 1ES',color:'#be185d',openedDate:'2025-10-01'},
+  ],
+  users:[
+    {id:'u1',name:'Yoav',email:'yoav@bbagel.co.uk',role:'Admin'},
+    {id:'u2',name:'Rachel',email:'rachel@bbagel.co.uk',role:'Admin'},
+    {id:'u3',name:'Alon',email:'alonkubi@gmail.com',role:'Admin'},
+  ],
+  hasEmbeddedData:true
+};
+
+function loadAccounts(){
+  try{const d=JSON.parse(localStorage.getItem(ACCT_STORAGE));if(d&&d.length)return d}catch(e){}
+  const init=[BBAGEL_ACCOUNT];localStorage.setItem(ACCT_STORAGE,JSON.stringify(init));return init;
+}
+function saveAccounts(accts){localStorage.setItem(ACCT_STORAGE,JSON.stringify(accts))}
+function loadSession(){try{return JSON.parse(localStorage.getItem(SESSION_STORAGE))}catch(e){return null}}
+function saveSession(s){localStorage.setItem(SESSION_STORAGE,JSON.stringify(s))}
+function clearSession(){localStorage.removeItem(SESSION_STORAGE)}
+function findAccountByEmail(email){
+  const e=email.toLowerCase().trim();
+  const accts=loadAccounts();
+  return accts.find(a=>a.adminEmails.some(ae=>ae.toLowerCase()===e));
+}
+
+/* Account context */
+const AccountCtx=createContext(null);
+function useAccount(){return useContext(AccountCtx)}
+
+/* ═══ BIBLICAL LOGO SVG ═══ */
+function FeedbackHubLogo({size=42,light=false}){
+  const fg=light?'#fff':'#1c1917';
+  return React.createElement('svg',{width:size,height:size,viewBox:'0 0 48 48',fill:'none',xmlns:'http://www.w3.org/2000/svg'},
+    React.createElement('rect',{width:48,height:48,rx:12,fill:'#d4372c'}),
+    React.createElement('path',{d:'M12 10c0-1 .8-2 2-2h14c1.5 0 3 1 4 2l4 5c.6.8 1 1.8 1 2.8V38c0 1.1-.9 2-2 2H14c-1.1 0-2-.9-2-2V10z',fill:'#fff',opacity:.9}),
+    React.createElement('path',{d:'M28 8v8c0 .6.4 1 1 1h6',fill:'none',stroke:'#d4372c',strokeWidth:1.5,strokeLinecap:'round'}),
+    React.createElement('path',{d:'M17 22h14M17 27h14M17 32h10',stroke:'#d4372c',strokeWidth:1.8,strokeLinecap:'round',opacity:.6}),
+    React.createElement('path',{d:'M19 15l2.5 2L25 13',fill:'none',stroke:'#d4372c',strokeWidth:2,strokeLinecap:'round',strokeLinejoin:'round'}),
+  );
+}
+
+/* ═══ LOGIN SCREEN ═══ */
+function LoginScreen({onLogin}){
+  const [email,setEmail]=useState('');
+  const [mode,setMode]=useState('login');/* login | signup */
+  const [bizName,setBizName]=useState('');
+  const [err,setErr]=useState('');
+  const [loading,setLoading]=useState(false);
+
+  const handleLogin=()=>{
+    if(!email.trim()){setErr('Enter your email address');return}
+    const acct=findAccountByEmail(email);
+    if(acct){
+      saveSession({accountId:acct.id,email:email.toLowerCase().trim()});
+      onLogin();
+    }else{
+      setErr('No account found for this email. Create a new account below.');
+      setMode('signup');
+    }
+  };
+  const handleSignup=()=>{
+    if(!email.trim()||!bizName.trim()){setErr('Fill in all fields');return}
+    const accts=loadAccounts();
+    if(accts.find(a=>a.adminEmails.some(e=>e.toLowerCase()===email.toLowerCase().trim()))){setErr('An account with this email already exists');return}
+    const id='acct_'+Date.now();
+    const newAcct={id,businessName:bizName.trim(),feedbackEmail:email.toLowerCase().trim(),adminEmails:[email.toLowerCase().trim()],locations:[],users:[{id:'u1',name:email.split('@')[0],email:email.toLowerCase().trim(),role:'Admin'}],hasEmbeddedData:false};
+    accts.push(newAcct);
+    saveAccounts(accts);
+    saveSession({accountId:id,email:email.toLowerCase().trim()});
+    onLogin();
+  };
+
+  return React.createElement('div',{style:{minHeight:'100vh',background:'linear-gradient(135deg,#1c1917 0%,#292524 50%,#1c1917 100%)',display:'flex',alignItems:'center',justifyContent:'center',padding:20}},
+    React.createElement('div',{style:{maxWidth:420,width:'100%',textAlign:'center'}},
+      React.createElement('div',{style:{marginBottom:32}},
+        React.createElement(FeedbackHubLogo,{size:64}),
+        React.createElement('h1',{style:{color:'#fff',fontSize:28,fontWeight:800,marginTop:16,letterSpacing:'-0.5px'}},'Feedback Hub'),
+        React.createElement('p',{style:{color:'rgba(255,255,255,.5)',fontSize:14,marginTop:4}},'Customer feedback management platform')
+      ),
+      React.createElement('div',{style:{background:'#fff',borderRadius:16,padding:32,boxShadow:'0 8px 32px rgba(0,0,0,.3)'}},
+        mode==='login'?React.createElement(React.Fragment,null,
+          React.createElement('h2',{style:{fontSize:18,fontWeight:700,marginBottom:4}},'Sign In'),
+          React.createElement('p',{style:{fontSize:13,color:'#78716c',marginBottom:20}},'Enter your admin email to access your account'),
+          React.createElement('input',{type:'email',value:email,onChange:e=>{setEmail(e.target.value);setErr('')},onKeyDown:e=>e.key==='Enter'&&handleLogin(),placeholder:'your@email.com',style:{width:'100%',padding:'12px 16px',border:'1px solid #e7e5e4',borderRadius:10,fontSize:14,marginBottom:12,outline:'none',fontFamily:'var(--font)'}}),
+          err&&React.createElement('div',{style:{color:'#d4372c',fontSize:12,marginBottom:12}},err),
+          React.createElement('button',{onClick:handleLogin,style:{width:'100%',padding:'12px',background:'#d4372c',color:'#fff',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'var(--font)'}},'Sign In'),
+          React.createElement('div',{style:{marginTop:16,paddingTop:16,borderTop:'1px solid #e7e5e4'}},
+            React.createElement('p',{style:{fontSize:12,color:'#a8a29e'}},"Don't have an account? "),
+            React.createElement('button',{onClick:()=>{setMode('signup');setErr('')},style:{color:'#d4372c',fontWeight:600,fontSize:13,cursor:'pointer',background:'none',border:'none',fontFamily:'var(--font)'}},'Create one free')
+          )
+        ):React.createElement(React.Fragment,null,
+          React.createElement('h2',{style:{fontSize:18,fontWeight:700,marginBottom:4}},'Create Account'),
+          React.createElement('p',{style:{fontSize:13,color:'#78716c',marginBottom:20}},'Set up your business in 30 seconds'),
+          React.createElement('input',{type:'text',value:bizName,onChange:e=>{setBizName(e.target.value);setErr('')},placeholder:'Your business name',style:{width:'100%',padding:'12px 16px',border:'1px solid #e7e5e4',borderRadius:10,fontSize:14,marginBottom:12,outline:'none',fontFamily:'var(--font)'}}),
+          React.createElement('input',{type:'email',value:email,onChange:e=>{setEmail(e.target.value);setErr('')},onKeyDown:e=>e.key==='Enter'&&handleSignup(),placeholder:'Admin email address',style:{width:'100%',padding:'12px 16px',border:'1px solid #e7e5e4',borderRadius:10,fontSize:14,marginBottom:12,outline:'none',fontFamily:'var(--font)'}}),
+          err&&React.createElement('div',{style:{color:'#d4372c',fontSize:12,marginBottom:12}},err),
+          React.createElement('button',{onClick:handleSignup,style:{width:'100%',padding:'12px',background:'#d4372c',color:'#fff',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:'pointer',fontFamily:'var(--font)'}},'Create Account'),
+          React.createElement('div',{style:{marginTop:16,paddingTop:16,borderTop:'1px solid #e7e5e4'}},
+            React.createElement('button',{onClick:()=>{setMode('login');setErr('')},style:{color:'#d4372c',fontWeight:600,fontSize:13,cursor:'pointer',background:'none',border:'none',fontFamily:'var(--font)'}},'← Back to sign in')
+          )
+        )
+      )
+    )
+  );
+}
+
+/* ═══ PASTE & EXTRACT MODAL ═══ */
+function PasteExtractModal({platform,locationId,onExtracted,onClose}){
+  const [html,setHtml]=useState('');
+  const [results,setResults]=useState(null);
+  const [err,setErr]=useState('');
+
+  const extractReviews=()=>{
+    if(!html.trim()){setErr('Paste the page content first');return}
+    setErr('');
+    const reviews=[];
+    const doc=new DOMParser().parseFromString(html,'text/html');
+    if(platform==='deliveroo'){
+      /* Deliveroo review patterns */
+      const cards=doc.querySelectorAll('[class*="Review"],[class*="review"],[data-test-id*="review"]');
+      cards.forEach(card=>{
+        const text=card.querySelector('[class*="text"],[class*="comment"],[class*="body"]');
+        const rating=card.querySelector('[class*="star"],[class*="rating"],[aria-label*="star"]');
+        const date=card.querySelector('[class*="date"],[class*="time"]');
+        const author=card.querySelector('[class*="name"],[class*="author"]');
+        if(text&&text.textContent.trim()){
+          let r=0;
+          if(rating){const m=rating.textContent.match(/(\d)/)||rating.getAttribute('aria-label')?.match(/(\d)/);if(m)r=parseInt(m[1])}
+          reviews.push({date:date?date.textContent.trim():new Date().toISOString().split('T')[0],rating:r||null,author:author?author.textContent.trim():'Deliveroo Customer',text:text.textContent.trim(),source:'Deliveroo'});
+        }
+      });
+      /* Fallback: try to find text patterns */
+      if(reviews.length===0){
+        const allText=doc.body?doc.body.innerText||doc.body.textContent:'';
+        const blocks=allText.split(/\n{2,}/);
+        let current=null;
+        blocks.forEach(b=>{
+          const t=b.trim();
+          if(t.length>20&&t.length<1000&&!t.includes('Deliveroo')&&!t.includes('menu')&&!t.includes('basket')){
+            reviews.push({date:new Date().toISOString().split('T')[0],rating:null,author:'Deliveroo Customer',text:t,source:'Deliveroo'});
+          }
+        });
+      }
+    }else if(platform==='tripadvisor'){
+      /* TripAdvisor review patterns */
+      const cards=doc.querySelectorAll('[class*="review"],[data-test-target*="review"],.reviewSelector');
+      cards.forEach(card=>{
+        const text=card.querySelector('[class*="text"],[class*="entry"],[class*="partial_entry"],[class*="reviewText"],.entry');
+        const bubble=card.querySelector('[class*="bubble"],[class*="rating"]');
+        const date=card.querySelector('[class*="date"],[class*="ratingDate"]');
+        const author=card.querySelector('[class*="username"],[class*="member"],.memberOverlayLink');
+        if(text&&text.textContent.trim()){
+          let r=0;
+          if(bubble){const cls=bubble.className||'';const m=cls.match(/bubble_(\d)/);if(m)r=parseInt(m[1])}
+          reviews.push({date:date?date.textContent.trim().replace(/.*Reviewed\s*/i,''):new Date().toISOString().split('T')[0],rating:r||null,author:author?author.textContent.trim():'TripAdvisor User',text:text.textContent.trim(),source:'TripAdvisor'});
+        }
+      });
+    }
+    if(reviews.length>0){setResults(reviews)}else{setErr('Could not extract reviews. Try selecting all content on the review page (Ctrl+A), copy (Ctrl+C), then paste here.')}
+  };
+  const saveReviews=()=>{
+    if(!results||!results.length)return;
+    onExtracted(results);
+    onClose();
+  };
+
+  return React.createElement('div',{style:{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,.5)',display:'flex',alignItems:'center',justifyContent:'center',padding:20},onClick:e=>e.target===e.currentTarget&&onClose()},
+    React.createElement('div',{style:{background:'#fff',borderRadius:16,width:'100%',maxWidth:600,maxHeight:'80vh',overflow:'auto',padding:24}},
+      React.createElement('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}},
+        React.createElement('h3',{style:{fontSize:18,fontWeight:700}},'Paste & Extract — '+platform),
+        React.createElement('button',{onClick:onClose,style:{fontSize:20,cursor:'pointer',background:'none',border:'none'}},'×')
+      ),
+      React.createElement('div',{style:{background:'#fef3c7',border:'1px solid #fbbf24',borderRadius:10,padding:12,marginBottom:16,fontSize:12}},
+        React.createElement('strong',null,'How it works:'),' 1) Open the review page on '+platform+' in a new tab. 2) Log in if needed. 3) Select all (Ctrl+A), Copy (Ctrl+C). 4) Paste here (Ctrl+V). 5) Click Extract.'
+      ),
+      !results?React.createElement(React.Fragment,null,
+        React.createElement('textarea',{value:html,onChange:e=>{setHtml(e.target.value);setErr('')},placeholder:'Paste the full page content here (Ctrl+V)...',style:{width:'100%',minHeight:200,padding:12,border:'1px solid #e7e5e4',borderRadius:10,resize:'vertical',fontFamily:'monospace',fontSize:11}}),
+        err&&React.createElement('div',{style:{color:'#d4372c',fontSize:12,marginTop:8}},err),
+        React.createElement('div',{style:{display:'flex',gap:8,marginTop:12}},
+          React.createElement('button',{onClick:extractReviews,style:{padding:'10px 20px',background:'#d4372c',color:'#fff',border:'none',borderRadius:8,fontSize:13,fontWeight:600,cursor:'pointer'}},'Extract Reviews'),
+          React.createElement('button',{onClick:onClose,style:{padding:'10px 20px',background:'#e7e5e4',color:'#1c1917',border:'none',borderRadius:8,fontSize:13,fontWeight:600,cursor:'pointer'}},'Cancel')
+        )
+      ):React.createElement(React.Fragment,null,
+        React.createElement('div',{style:{background:'#dcfce7',border:'1px solid #86efac',borderRadius:10,padding:12,marginBottom:12,fontSize:13,fontWeight:600,color:'#16a34a'}},'Found '+results.length+' reviews!'),
+        React.createElement('div',{style:{maxHeight:300,overflow:'auto',marginBottom:12}},
+          results.slice(0,5).map((r,i)=>React.createElement('div',{key:i,style:{padding:10,background:'#f8f7f5',borderRadius:8,marginBottom:6,fontSize:12}},
+            React.createElement('div',{style:{fontWeight:600}},r.author+(r.rating?' — '+r.rating+'/5':'')),
+            React.createElement('div',{style:{color:'#78716c',marginTop:2}},r.text.substring(0,150)+(r.text.length>150?'...':''))
+          )),
+          results.length>5&&React.createElement('div',{style:{fontSize:12,color:'#78716c',textAlign:'center',padding:8}},'...and '+(results.length-5)+' more')
+        ),
+        React.createElement('div',{style:{display:'flex',gap:8}},
+          React.createElement('button',{onClick:saveReviews,style:{padding:'10px 20px',background:'#16a34a',color:'#fff',border:'none',borderRadius:8,fontSize:13,fontWeight:600,cursor:'pointer'}},'Import '+results.length+' Reviews'),
+          React.createElement('button',{onClick:()=>{setResults(null);setHtml('')},style:{padding:'10px 20px',background:'#e7e5e4',color:'#1c1917',border:'none',borderRadius:8,fontSize:13,fontWeight:600,cursor:'pointer'}},'Try Again')
+        )
+      )
+    )
+  );
+}
+
+/* ═══ LOCATIONS (now dynamic from account) ═══ */
+const BBAGEL_LOCATIONS=[
   {id:'fulham',name:'Fulham',address:'236D Fulham Rd, SW10 9NB',color:'#d4372c',openedDate:'2019-03-01'},
   {id:'soho',name:'Soho',address:'18 Wardour St, W1D 6QJ',color:'#2563eb',openedDate:'2020-06-01'},
   {id:'tcr',name:'TCR',address:'Tottenham Court Road',color:'#7c3aed',openedDate:'2021-04-01'},
@@ -244,6 +459,8 @@ const LOCATIONS=[
   {id:'swains',name:'Swains Lane',address:'Swains Lane, N6',color:'#0891b2',openedDate:'2023-06-01'},
   {id:'nos',name:'New Oxford St',address:'52 New Oxford St, WC1A 1ES',color:'#be185d',openedDate:'2025-10-01'},
 ];
+/* LOCATIONS is set dynamically from account — default to B Bagel for backwards compat */
+let LOCATIONS=BBAGEL_LOCATIONS;
 
 function monthsOpen(openedStr, refDate){
   const opened=new Date(openedStr);
@@ -259,8 +476,14 @@ function flagReview(text){if(!text)return null;const t=text.toLowerCase();if(URG
 
 /* ═══ AI ACTION ENGINE ═══
    Analyses each review and suggests the best response action.
-   Every review gets a response email from feedback@bbagel.co.uk.
    Additional actions are suggested based on content. */
+/* Helper: get current account info */
+function getCurrentAccount(){
+  const s=loadSession();if(!s)return BBAGEL_ACCOUNT;
+  const accts=loadAccounts();return accts.find(a=>a.id===s.accountId)||BBAGEL_ACCOUNT;
+}
+function getBusinessName(){return getCurrentAccount().businessName||'My Business'}
+function getFeedbackEmail(){return getCurrentAccount().feedbackEmail||'feedback@example.com'}
 
 /* ═══ MYSTERY SHOPPER QUESTIONS (editable in Settings) ═══ */
 const DEFAULT_MYSTERY_CATS=[
@@ -275,11 +498,17 @@ const DEFAULT_MYSTERY_CATS=[
 ];
 
 /* ═══ DEFAULT USERS & PERMISSIONS ═══ */
-const DEFAULT_USERS=[
+const BBAGEL_USERS=[
   {id:'u1',name:'Yoav',email:'yoav@bbagel.co.uk',role:'Admin',permissions:{dashboard:true,reviews:true,report:true,locations:true,mystery:true,integrations:true,digest:true,settings:true},locationAccess:'all'},
   {id:'u2',name:'Rachel',email:'rachel@bbagel.co.uk',role:'Admin',permissions:{dashboard:true,reviews:true,report:true,locations:true,mystery:true,integrations:true,digest:true,settings:true},locationAccess:'all'},
   {id:'u3',name:'Alon',email:'alonkubi@gmail.com',role:'Admin',permissions:{dashboard:true,reviews:true,report:true,locations:true,mystery:true,integrations:true,digest:true,settings:true},locationAccess:'all'},
 ];
+function getDefaultUsers(acct){
+  if(acct&&acct.id==='bbagel')return BBAGEL_USERS;
+  if(acct&&acct.users)return acct.users.map((u,i)=>({id:'u'+(i+1),...u,permissions:{dashboard:true,reviews:true,report:true,locations:true,mystery:true,integrations:true,digest:true,settings:true},locationAccess:'all'}));
+  return [];
+}
+const DEFAULT_USERS=BBAGEL_USERS;
 
 const FEATURE_LIST=[
   {id:'dashboard',label:'Dashboard'},
@@ -344,17 +573,20 @@ const DEFAULT_LOCATION_URLS={
   }
 };
 
-/* Saved config shape in localStorage('bbagel_review_sources'):
+/* Saved config shape in localStorage('fhub_{accountId}_sources'):
    { proxyUrl: 'https://script.google.com/macros/s/.../exec',
      googleApiKey: '',
      locations: { fulham: { google: 'ChIJ...', trustpilot: 'https://...', ... }, ... },
      lastImport: { fulham: { google: '2026-03-10T...', ... }, ... }
    }
 */
+function getStorageKey(suffix){const s=loadSession();const id=s?s.accountId:'bbagel';return 'fhub_'+id+'_'+suffix}
 
 function getReviewConfig(){
   try{
-    const saved=JSON.parse(localStorage.getItem('bbagel_review_sources'))||{};
+    /* Try new key first, fall back to legacy */
+    let saved=JSON.parse(localStorage.getItem(getStorageKey('sources')))||{};
+    if(!saved.locations){const legacy=JSON.parse(localStorage.getItem('bbagel_review_sources'));if(legacy&&legacy.locations)saved=legacy}
     /* Auto-merge defaults for any locations missing URLs */
     if(!saved._defaultsMerged){
       if(!saved.locations) saved.locations={};
@@ -365,13 +597,13 @@ function getReviewConfig(){
         });
       });
       saved._defaultsMerged=true;
-      localStorage.setItem('bbagel_review_sources',JSON.stringify(saved));
+      localStorage.setItem(getStorageKey('sources'),JSON.stringify(saved));
     }
     return saved;
   }catch(e){return{locations:JSON.parse(JSON.stringify(DEFAULT_LOCATION_URLS))}}
 }
 function saveReviewConfig(cfg){
-  localStorage.setItem('bbagel_review_sources',JSON.stringify(cfg));
+  localStorage.setItem(getStorageKey('sources'),JSON.stringify(cfg));
 }
 
 /* Import reviews from a single platform for a single location */
@@ -392,10 +624,10 @@ async function fetchReviewsFromProxy(proxyUrl, platform, locationId, platformUrl
 
 /* Get all imported reviews from localStorage */
 function getImportedReviews(){
-  try{return JSON.parse(localStorage.getItem('bbagel_imported_reviews'))||{complaints:[],compliments:[]}}catch(e){return{complaints:[],compliments:[]}}
+  try{return JSON.parse(localStorage.getItem(getStorageKey('reviews')))||{complaints:[],compliments:[]}}catch(e){return{complaints:[],compliments:[]}}
 }
 function saveImportedReviews(data){
-  localStorage.setItem('bbagel_imported_reviews',JSON.stringify(data));
+  localStorage.setItem(getStorageKey('reviews'),JSON.stringify(data));
 }
 
 /* Deduplicate by creating a fingerprint from date+source+info substring */
@@ -533,28 +765,30 @@ function generateEmail(item, type, actionId){
   const location=item.location||'';
   const date=item.date||'';
   const reviewText=(item.info||'').slice(0,200);
+  const biz=getBusinessName();
+  const femail=getFeedbackEmail();
 
   if(type==='complaint'){
     if(actionId==='refund'){
       return {
-        subject: 'Your refund from B Bagel '+location,
-        from: 'feedback@bbagel.co.uk',
+        subject: 'Your refund from '+biz+' '+location,
+        from: femail,
         to: customerName,
-        body: 'Dear '+customerName+',\n\nThank you for bringing this to our attention. We sincerely apologise for your experience at our '+location+' store.\n\nWe have reviewed your feedback and would like to offer you a full refund. Our team has been notified and we are taking steps to ensure this does not happen again.\n\nPlease reply to this email with your preferred refund method and we will process it within 2 business days.\n\nWith our apologies,\nThe B Bagel Team\nfeedback@bbagel.co.uk'
+        body: 'Dear '+customerName+',\n\nThank you for bringing this to our attention. We sincerely apologise for your experience at our '+location+' store.\n\nWe have reviewed your feedback and would like to offer you a full refund. Our team has been notified and we are taking steps to ensure this does not happen again.\n\nPlease reply to this email with your preferred refund method and we will process it within 2 business days.\n\nWith our apologies,\nThe '+biz+' Team\n'+femail
       };
     }
     return {
-      subject: 'Re: Your feedback about B Bagel '+location,
-      from: 'feedback@bbagel.co.uk',
+      subject: 'Re: Your feedback about '+biz+' '+location,
+      from: femail,
       to: customerName,
-      body: 'Dear '+customerName+',\n\nThank you for your feedback regarding your visit to our '+location+' store on '+date+'.\n\nWe are sorry to hear about your experience. We take all feedback seriously and your comments have been shared with our '+location+' team leader.\n\nWe would love the chance to make this right. Please do not hesitate to reply to this email or visit us again — your next coffee is on us.\n\nKind regards,\nThe B Bagel Team\nfeedback@bbagel.co.uk'
+      body: 'Dear '+customerName+',\n\nThank you for your feedback regarding your visit to our '+location+' store on '+date+'.\n\nWe are sorry to hear about your experience. We take all feedback seriously and your comments have been shared with our '+location+' team leader.\n\nWe would love the chance to make this right. Please do not hesitate to reply to this email or visit us again — your next coffee is on us.\n\nKind regards,\nThe '+biz+' Team\n'+femail
     };
   }
   return {
-    subject: 'Thank you for your kind words! — B Bagel '+location,
-    from: 'feedback@bbagel.co.uk',
+    subject: 'Thank you for your kind words! — '+biz+' '+location,
+    from: femail,
     to: customerName,
-    body: 'Dear '+customerName+',\n\nThank you so much for your lovely feedback about our '+location+' store! It truly means the world to our team.\n\nWe have shared your kind words with our '+location+' crew — it really made their day.\n\nWe look forward to welcoming you back soon!\n\nWarm regards,\nThe B Bagel Team\nfeedback@bbagel.co.uk'
+    body: 'Dear '+customerName+',\n\nThank you so much for your lovely feedback about our '+location+' store! It truly means the world to our team.\n\nWe have shared your kind words with our '+location+' crew — it really made their day.\n\nWe look forward to welcoming you back soon!\n\nWarm regards,\nThe '+biz+' Team\n'+femail
   };
 }
 
@@ -763,7 +997,7 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
         status:hasReply?'replied':'sent',
         email, reply, log
       }}));
-      setToast('✓ Email sent from feedback@bbagel.co.uk');
+      setToast('✓ Email sent from '+getFeedbackEmail());
     },2000);
   };
 
@@ -798,7 +1032,7 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
         </>}
         {cardState.status==='sending'&&<div className="flex items-center gap-2">
           <div className="spinner"/>
-          <span className="text-sm" style={{color:'var(--amber)',fontWeight:600}}>Sending email from feedback@bbagel.co.uk...</span>
+          <span className="text-sm" style={{color:'var(--amber)',fontWeight:600}}>Sending email...</span>
         </div>}
         {(cardState.status==='sent'||cardState.status==='replied')&&<div>
           <button className={`btn-action ${statusClass}`} onClick={()=>handleAction(actions[0])} style={{cursor:'pointer'}}>
@@ -968,7 +1202,7 @@ function ReportPage({complaints,compliments}){
   const maxScore=Math.max(...locScores.map(l=>l.score),1);
   return(
     <div>
-      <div className="page-header"><div className="flex items-center gap-2"><h2>Report</h2><InfoIcon text="Scores = % positive feedback. Actions tracked via feedback@bbagel.co.uk email system."/></div><p>Performance overview & improvement insights</p></div>
+      <div className="page-header"><div className="flex items-center gap-2"><h2>Report</h2><InfoIcon text="Scores = % positive feedback. Actions tracked via email system."/></div><p>Performance overview & improvement insights</p></div>
       <div className="time-bar">
         <button className="time-chip active" onClick={()=>{setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
         <button className="time-chip" onClick={()=>{setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
@@ -1155,7 +1389,7 @@ function MysteryShopperPage({mysteryCats}){
 }
 
 /* ═══ INTEGRATIONS ═══ */
-function IntegrationsPage({onNavigate}){
+function IntegrationsPage({onNavigate,onPasteExtract}){
   const cfg=getReviewConfig();
   const locs=cfg.locations||{};
   const hasProxy=!!cfg.proxyUrl;
@@ -1203,6 +1437,10 @@ function IntegrationsPage({onNavigate}){
               {st.status==='connected'?'● '+st.label:'○ '+st.label}
             </span>
             {!i.public&&<span className="badge" style={{fontSize:9,padding:'1px 6px',background:'var(--amber-soft)',color:'var(--amber)'}}>Login may be needed</span>}
+            {!i.public&&onPasteExtract&&st.locCount>0&&<button className="btn btn-sm btn-secondary" style={{marginLeft:4,fontSize:11,padding:'2px 10px'}} onClick={()=>{
+              const firstLoc=LOCATIONS.find(l=>(locs[l.id]||{})[i.id]);
+              if(firstLoc)onPasteExtract({platform:i.name,locationId:firstLoc.id});
+            }}>📋 Paste & Extract</button>}
           </div>
         </div>
       </div>;
@@ -1213,11 +1451,11 @@ function IntegrationsPage({onNavigate}){
 /* ═══ DIGEST ═══ */
 function DigestPage(){
   const [freq,setFreq]=useState('weekly');const [day,setDay]=useState('monday');
-  const [recip,setRecip]=useState('yoav@bbagel.co.uk, rachel@bbagel.co.uk');
+  const [recip,setRecip]=useState(()=>{const a=getCurrentAccount();return a.adminEmails?a.adminEmails.join(', '):''});
   const [sections,setSections]=useState({summary:true,urgent:true,trends:true,locations:true,compliments:true,mystery:false});
   const [toast,setToast]=useState('');
   return(<div>{toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}
-    <div className="page-header"><div className="flex items-center gap-2"><h2>Email Digest</h2><InfoIcon text="Sends a scheduled feedback summary to your team via feedback@bbagel.co.uk."/></div><p>Automated summary to your inbox</p></div>
+    <div className="page-header"><div className="flex items-center gap-2"><h2>Email Digest</h2><InfoIcon text="Sends a scheduled feedback summary to your team."/></div><p>Automated summary to your inbox</p></div>
     <div className="digest-layout">
       <div className="digest-config"><div className="card">
         <h3 style={{fontSize:15,fontWeight:700,marginBottom:16}}>Configuration</h3>
@@ -1229,7 +1467,7 @@ function DigestPage(){
       </div></div>
       <div className="digest-preview"><div className="card"><div className="flex items-center justify-between mb-3"><h3 style={{fontSize:15,fontWeight:700}}>Preview</h3><span className="text-xs text-light">How the email looks</span></div>
         <div className="digest-preview-box">
-          <div style={{textAlign:'center',marginBottom:20}}><div style={{width:48,height:48,borderRadius:'50%',background:'var(--red)',display:'inline-flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800,fontSize:18,marginBottom:8}}>B</div><div style={{fontSize:18,fontWeight:700}}>B Bagel — Weekly Digest</div><div className="text-xs text-light">From feedback@bbagel.co.uk</div></div>
+          <div style={{textAlign:'center',marginBottom:20}}><div style={{marginBottom:8}}><FeedbackHubLogo size={48}/></div><div style={{fontSize:18,fontWeight:700}}>{getBusinessName()} — Weekly Digest</div><div className="text-xs text-light">From {getFeedbackEmail()}</div></div>
           {sections.summary&&<div style={{padding:16,background:'var(--surface2)',borderRadius:'var(--r-sm)',marginBottom:12}}><div className="text-xs font-bold" style={{color:'var(--red)',marginBottom:6}}>WEEKLY SUMMARY</div><div className="text-sm">42 complaints · 67 compliments · 3 urgent</div></div>}
           {sections.urgent&&<div style={{padding:16,background:'var(--red-soft)',borderRadius:'var(--r-sm)',marginBottom:12}}><div className="text-xs font-bold" style={{color:'var(--red)',marginBottom:6}}>⚠ URGENT</div><div className="text-sm">Food poisoning report — Camden<br/>Allergy incident — Soho</div></div>}
           {sections.trends&&<div style={{padding:16,background:'var(--surface2)',borderRadius:'var(--r-sm)',marginBottom:12}}><div className="text-xs font-bold mb-2" style={{color:'var(--blue)'}}>TRENDS</div><div className="text-sm">Missing items ↑18% · Service ↓12%</div></div>}
@@ -1353,7 +1591,7 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
             <li>Paste the URL in the Proxy URL field above</li>
           </ol>
           <button className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={()=>{
-            const script=`// B Bagel Review Proxy — Google Apps Script
+            const script=`// Feedback Hub Review Proxy — Google Apps Script
 // Deploy as Web App with access: "Anyone"
 
 function doGet(e) {
@@ -1696,13 +1934,13 @@ function fetchJustEatReviews(restaurantUrl) {
             const data=getImportedReviews();
             const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
             const url=URL.createObjectURL(blob);
-            const a=document.createElement('a');a.href=url;a.download='bbagel-imported-reviews.json';a.click();
+            const a=document.createElement('a');a.href=url;a.download='feedbackhub-imported-reviews.json';a.click();
             URL.revokeObjectURL(url);
             setToast('Exported imported reviews');
           }}>Export Imported Reviews</button>
           <button className="btn btn-sm" style={{color:'var(--red)',fontWeight:600}} onClick={()=>{
             if(confirm('Clear all imported reviews from local storage? This cannot be undone.')){
-              localStorage.removeItem('bbagel_imported_reviews');
+              localStorage.removeItem(getStorageKey('reviews'));
               if(onImportComplete) onImportComplete();
               setToast('Imported reviews cleared');
             }
@@ -1714,7 +1952,7 @@ function fetchJustEatReviews(restaurantUrl) {
     {/* ═══ ACTIONS TAB ═══ */}
     {settingsTab==='actions'&&<div className="card" style={{marginBottom:20}}>
       <h3 style={{fontSize:15,fontWeight:700,marginBottom:4}}>Response Actions</h3>
-      <div className="text-xs text-muted mb-3">Configure which actions are available on review cards. All responses are sent from <strong>feedback@bbagel.co.uk</strong>.</div>
+      <div className="text-xs text-muted mb-3">Configure which actions are available on review cards. All responses are sent from <strong>{getFeedbackEmail()}</strong>.</div>
       {enabledActions.map(a=><div key={a.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid var(--border)'}}>
         <div className="flex items-center gap-2">
           <span style={{fontSize:16}}>{a.icon}</span>
@@ -1825,7 +2063,7 @@ function fetchJustEatReviews(restaurantUrl) {
         <div className="text-xs font-bold text-muted mb-2">Add Team Member</div>
         <div className="flex gap-2" style={{flexWrap:'wrap'}}>
           <input className="filter-input" value={newUserName} onChange={e=>setNewUserName(e.target.value)} placeholder="Name" style={{maxWidth:140}}/>
-          <input className="filter-input" value={newUserEmail} onChange={e=>setNewUserEmail(e.target.value)} placeholder="email@bbagel.co.uk" style={{maxWidth:220}}/>
+          <input className="filter-input" value={newUserEmail} onChange={e=>setNewUserEmail(e.target.value)} placeholder="email@company.com" style={{maxWidth:220}}/>
           <button className="btn btn-sm btn-primary" onClick={addUser}>Add</button>
         </div>
       </div>
@@ -1837,7 +2075,7 @@ function fetchJustEatReviews(restaurantUrl) {
     {/* ═══ EMAIL TAB ═══ */}
     {settingsTab==='email'&&<div className="card" style={{marginBottom:20}}><h3 style={{fontSize:15,fontWeight:700,marginBottom:12}}>Email</h3>
       <div style={{padding:16,background:'var(--surface2)',borderRadius:'var(--r-sm)'}}>
-        <div className="flex items-center gap-3 mb-3"><span style={{fontSize:20}}>✉</span><div><div className="text-sm font-bold">feedback@bbagel.co.uk</div><div className="text-xs text-muted">All customer responses are sent and received via this address</div></div></div>
+        <div className="flex items-center gap-3 mb-3"><span style={{fontSize:20}}>✉</span><div><div className="text-sm font-bold">{getFeedbackEmail()}</div><div className="text-xs text-muted">All customer responses are sent and received via this address</div></div></div>
         <div className="text-xs text-light">Replies from customers automatically appear on the review card. The action log tracks every email sent and response received.</div>
       </div>
     </div>}
@@ -1850,18 +2088,26 @@ function fetchJustEatReviews(restaurantUrl) {
 
 /* ═══ APP ═══ */
 function App(){
+  const acct=useAccount();
   const [page,setPage]=useState('dashboard');
   const [toast,setToast]=useState('');
   const [emailModal,setEmailModal]=useState(null);
   const [actionStates,setActionStates]=useState({});
   const [enabledActions,setEnabledActions]=useState(DEFAULT_ACTIONS.map(a=>({...a})));
   const [mysteryCats,setMysteryCats]=useState(DEFAULT_MYSTERY_CATS.map(c=>({...c,questions:[...(c.questions||[])]})));
-  const [users,setUsers]=useState(DEFAULT_USERS.map(u=>({...u,permissions:{...u.permissions}})));
+  const [users,setUsers]=useState(()=>getDefaultUsers(acct));
   const [importedData,setImportedData]=useState(()=>getImportedReviews());
+  const [pasteModal,setPasteModal]=useState(null);
 
-  /* Merge embedded + imported reviews */
-  const embeddedComplaints=typeof COMPLAINT_DATA!=='undefined'?COMPLAINT_DATA:[];
-  const embeddedCompliments=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
+  /* Set LOCATIONS dynamically from account */
+  useEffect(()=>{
+    if(acct&&acct.locations&&acct.locations.length>0){LOCATIONS=acct.locations}
+    else{LOCATIONS=BBAGEL_LOCATIONS}
+  },[acct]);
+
+  /* Merge embedded + imported reviews — only show embedded data for B Bagel account */
+  const embeddedComplaints=(acct&&acct.hasEmbeddedData&&typeof COMPLAINT_DATA!=='undefined')?COMPLAINT_DATA:[];
+  const embeddedCompliments=(acct&&acct.hasEmbeddedData&&typeof COMPLIMENT_DATA!=='undefined')?COMPLIMENT_DATA:[];
   const complaints=useMemo(()=>[...embeddedComplaints,...(importedData.complaints||[])],[embeddedComplaints,importedData]);
   const compliments=useMemo(()=>[...embeddedCompliments,...(importedData.compliments||[])],[embeddedCompliments,importedData]);
 
@@ -1894,26 +2140,58 @@ function App(){
       case 'report':return <ReportPage complaints={complaints} compliments={compliments}/>;
       case 'locations':return <LocationsPage complaints={complaints} compliments={compliments}/>;
       case 'mystery':return <MysteryShopperPage mysteryCats={mysteryCats}/>;
-      case 'integrations':return <IntegrationsPage onNavigate={setPage}/>;
+      case 'integrations':return <IntegrationsPage onNavigate={setPage} onPasteExtract={setPasteModal}/>;
       case 'digest':return <DigestPage/>;
       case 'settings':return <SettingsPage enabledActions={enabledActions} setEnabledActions={setEnabledActions} mysteryCats={mysteryCats} setMysteryCats={setMysteryCats} users={users} setUsers={setUsers} onImportComplete={()=>setImportedData(getImportedReviews())}/>;
       default:return <DashboardPage complaints={complaints} compliments={compliments} onNavigate={setPage}/>;
     }
   };
+  const handlePasteExtracted=(reviews)=>{
+    const imported=getImportedReviews();
+    reviews.forEach(r=>{
+      const item={date:r.date,location:pasteModal.locationId,source:r.source,info:r.text,customer_name:r.author,rating:r.rating};
+      if(r.rating&&r.rating>=4||!r.rating){imported.compliments.push(item)}else{imported.complaints.push(item)}
+    });
+    saveImportedReviews(imported);
+    setImportedData({...imported});
+    setToast('Imported '+reviews.length+' reviews from '+pasteModal.platform);
+  };
+
   return(<div className="app">
     {toast&&<Toast msg={toast} onClose={()=>setToast('')}/>}
     {emailModal&&<EmailModal emailData={emailModal} onClose={()=>setEmailModal(null)}/>}
-    <aside className="sidebar"><div className="sidebar-logo"><div className="logo-mark">B</div><div className="logo-text"><h1>B Bagel</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&urgentCount>0&&<span className="nav-badge">{urgentCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}</nav></aside>
+    {pasteModal&&<PasteExtractModal platform={pasteModal.platform} locationId={pasteModal.locationId} onExtracted={handlePasteExtracted} onClose={()=>setPasteModal(null)}/>}
+    <aside className="sidebar"><div className="sidebar-logo"><FeedbackHubLogo size={42}/><div className="logo-text"><h1>{getBusinessName()}</h1><span>Feedback Hub</span></div></div><nav className="sidebar-nav"><div className="nav-section">Main</div>{NAV.slice(0,4).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span>{n.id==='reviews'&&urgentCount>0&&<span className="nav-badge">{urgentCount}</span>}</button>)}<div className="nav-section">Tools</div>{NAV.slice(4,7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}<div className="nav-section">System</div>{NAV.slice(7).map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.label}</span></button>)}{acct&&acct.logout&&<button className="nav-item" onClick={acct.logout} style={{marginTop:16,color:'var(--text3)',fontSize:12}}><span style={{fontSize:14}}>↩</span><span>Sign Out</span></button>}</nav></aside>
     <main className="main">{renderPage()}</main>
     <nav className="bottom-nav">{[{id:'dashboard',icon:I.dashboard,l:'Home'},{id:'reviews',icon:I.feed,l:'Reviews'},{id:'report',icon:I.report,l:'Report'},{id:'locations',icon:I.trophy,l:'Perform.'},{id:'mystery',icon:I.mystery,l:'Shopper'},{id:'settings',icon:I.settings,l:'More'}].map(n=><button key={n.id} className={`nav-item ${page===n.id?'active':''}`} onClick={()=>setPage(n.id)}>{n.icon}<span>{n.l}</span></button>)}</nav>
   </div>);
 }
-ReactDOM.render(<App/>,document.getElementById('root'));
+/* ═══ ROOT: Login gate + Account provider ═══ */
+function Root(){
+  const [loggedIn,setLoggedIn]=useState(()=>!!loadSession());
+  const [acct,setAcct]=useState(()=>{const s=loadSession();if(!s)return null;const accts=loadAccounts();return accts.find(a=>a.id===s.accountId)||null});
+
+  const handleLogin=()=>{
+    const s=loadSession();if(!s)return;
+    const accts=loadAccounts();
+    const a=accts.find(ac=>ac.id===s.accountId);
+    if(a){LOCATIONS=a.locations&&a.locations.length?a.locations:BBAGEL_LOCATIONS}
+    setAcct(a);
+    setLoggedIn(true);
+  };
+  const handleLogout=()=>{clearSession();setLoggedIn(false);setAcct(null)};
+
+  if(!loggedIn)return React.createElement(LoginScreen,{onLogin:handleLogin});
+  return React.createElement(AccountCtx.Provider,{value:{...acct,logout:handleLogout}},
+    React.createElement(App,null)
+  );
+}
+ReactDOM.render(<Root/>,document.getElementById('root'));
 </script>
 </body>
 </html>'''
 
-output_path = 'mnt/outputs/b-bagel-feedback-hub.html'
+output_path = 'index.html'
 with open(output_path, 'w') as f:
     f.write(html)
 
