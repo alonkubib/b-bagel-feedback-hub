@@ -743,19 +743,23 @@ async function runFullImport(onProgress){
   const session=loadSession();
   if(!session||!session.email) return{total:0,errors:['Not logged in. Please sign in first.']};
 
-  /* Build locations map + locationNames map for the server */
+  /* Build locations map + locationNames map for the server.
+     Use the sources config directly (not LOCATIONS array) so ALL configured sources are included. */
   const locs=cfg.locations||{};
   const serverLocations={};
   const locationNames={};
 
-  for(const loc of LOCATIONS){
-    const locCfg=locs[loc.id]||{};
+  /* Build a name lookup from LOCATIONS array (UI-visible locations) */
+  const locNameMap={};
+  (typeof LOCATIONS!=='undefined'?LOCATIONS:[]).forEach(l=>{locNameMap[l.id]=l.name});
+
+  for(const [locId,locCfg] of Object.entries(locs)){
     const hasAnySources=Object.values(locCfg).some(v=>v);
     if(hasAnySources){
-      serverLocations[loc.id]={};
-      locationNames[loc.id]=loc.name;
+      serverLocations[locId]={};
+      locationNames[locId]=locNameMap[locId]||locId.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
       REVIEW_PLATFORMS.forEach(p=>{
-        if(locCfg[p.id]) serverLocations[loc.id][p.id]=locCfg[p.id];
+        if(locCfg[p.id]) serverLocations[locId][p.id]=locCfg[p.id];
       });
     }
   }
