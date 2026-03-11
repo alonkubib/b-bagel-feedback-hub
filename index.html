@@ -590,8 +590,7 @@ const DEFAULT_LOCATION_URLS={
 };
 
 /* Saved config shape in localStorage('fhub_{accountId}_sources'):
-   { proxyUrl: 'https://script.google.com/macros/s/.../exec',
-     googleApiKey: '',
+   { googleApiKey: '',
      locations: { fulham: { google: 'ChIJ...', trustpilot: 'https://...', ... }, ... },
      lastImport: { fulham: { google: '2026-03-10T...', ... }, ... }
    }
@@ -622,20 +621,47 @@ function saveReviewConfig(cfg){
   localStorage.setItem(getStorageKey('sources'),JSON.stringify(cfg));
 }
 
-/* Import reviews from a single platform for a single location */
-async function fetchReviewsFromProxy(proxyUrl, platform, locationId, platformUrl, apiKey, since){
-  if(!proxyUrl||!platformUrl) return {ok:false,error:'Missing proxy URL or platform URL'};
+/* Import reviews via server-side VPS API (replaces old Apps Script proxy) */
+async function fetchReviewsViaServer(locations, googleApiKey, locationNames){
+  const session=loadSession();
+  if(!session||!session.email) return {ok:false,error:'Not logged in'};
   try{
-    const params=new URLSearchParams({platform,locationId,url:platformUrl,since:since||''});
-    if(apiKey) params.set('apiKey',apiKey);
-    const resp=await fetch(proxyUrl+'?'+params.toString());
-    if(!resp.ok) return {ok:false,error:'Proxy returned '+resp.status};
+    const resp=await apiFetch('/api/fetch-reviews',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({locations,googleApiKey:googleApiKey||'',locationNames:locationNames||{}})});
+    if(!resp.ok){const e=await resp.json().catch(()=>({}));return {ok:false,error:e.error||'Server returned '+resp.status}}
     const data=await resp.json();
-    if(data.error) return {ok:false,error:data.error};
-    return {ok:true,reviews:data.reviews||[],count:data.reviews?.length||0};
+    return {ok:true,...data};
   }catch(e){
     return {ok:false,error:e.message};
   }
+}
+
+/* Pull all reviews from server into localStorage for rendering */
+async function syncReviewsFromServer(){
+  const session=loadSession();
+  if(!session||!session.email) return;
+  try{
+    const resp=await apiFetch('/api/reviews?limit=5000');
+    if(!resp.ok) return;
+    const data=await resp.json();
+    const existing=getImportedReviews();
+    const allFingerprints=new Set();
+    const embeddedComps=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
+    const embeddedComplaints=typeof COMPLAINT_DATA!=='undefined'?COMPLAINT_DATA:[];
+    [...embeddedComps,...embeddedComplaints,...existing.complaints,...existing.compliments].forEach(r=>allFingerprints.add(reviewFingerprint(r)));
+    let added=0;
+    (data.reviews||[]).forEach(r=>{
+      const review={location:r.location||'Unknown',date:r.date||'',source:r.platform||'unknown',type:r.category||'General',info:r.text||'',customer:r.author||'Anonymous',...(r.rating?{rating:r.rating}:{})};
+      const fp=reviewFingerprint(review);
+      if(!allFingerprints.has(fp)){
+        allFingerprints.add(fp);
+        if(r.sentiment==='positive'||r.type==='compliment'){existing.compliments.push(review)}
+        else{existing.complaints.push({...review,action:'',manager:''})}
+        added++;
+      }
+    });
+    if(added>0) saveImportedReviews(existing);
+    return added;
+  }catch(e){console.error('syncReviewsFromServer error:',e);return 0}
 }
 
 /* Get all imported reviews from localStorage */
@@ -696,40 +722,56 @@ function mergeImportedReviews(newReviews, locationName, platformName){
   return added;
 }
 
-/* Run full import for all configured locations and platforms */
+/* Run full import via VPS server-side fetching (replaces old proxy-based import) */
 async function runFullImport(onProgress){
   const cfg=getReviewConfig();
-  if(!cfg.proxyUrl){return{total:0,errors:['No proxy URL configured. Please set up the Google Apps Script proxy in Settings → Review Sources.']};}
+  const session=loadSession();
+  if(!session||!session.email) return{total:0,errors:['Not logged in. Please sign in first.']};
 
-  const results={total:0,errors:[],details:{}};
+  /* Build locations map + locationNames map for the server */
   const locs=cfg.locations||{};
+  const serverLocations={};
+  const locationNames={};
 
   for(const loc of LOCATIONS){
     const locCfg=locs[loc.id]||{};
-    for(const platform of REVIEW_PLATFORMS){
-      const url=locCfg[platform.id];
-      if(!url) continue;
-
-      const lastImport=(cfg.lastImport||{})[loc.id]?.[platform.id]||'';
-      if(onProgress) onProgress(loc.name+' — '+platform.name);
-
-      const result=await fetchReviewsFromProxy(cfg.proxyUrl,platform.id,loc.id,url,cfg.googleApiKey,lastImport);
-      if(result.ok&&result.reviews.length>0){
-        const added=mergeImportedReviews(result.reviews,loc.name,platform.name);
-        results.total+=added;
-        results.details[loc.id+'/'+platform.id]={fetched:result.count,added};
-        /* Update last import timestamp */
-        if(!cfg.lastImport) cfg.lastImport={};
-        if(!cfg.lastImport[loc.id]) cfg.lastImport[loc.id]={};
-        cfg.lastImport[loc.id][platform.id]=new Date().toISOString();
-      }else if(!result.ok){
-        results.errors.push(loc.name+'/'+platform.name+': '+result.error);
-      }
+    const hasAnySources=Object.values(locCfg).some(v=>v);
+    if(hasAnySources){
+      serverLocations[loc.id]={};
+      locationNames[loc.id]=loc.name;
+      REVIEW_PLATFORMS.forEach(p=>{
+        if(locCfg[p.id]) serverLocations[loc.id][p.id]=locCfg[p.id];
+      });
     }
   }
 
+  if(Object.keys(serverLocations).length===0) return{total:0,errors:['No review sources configured. Go to Settings → Review Sources to add platform URLs.']};
+
+  if(onProgress) onProgress('Sending request to server...');
+
+  /* Call server to fetch all reviews */
+  const result=await fetchReviewsViaServer(serverLocations,cfg.googleApiKey,locationNames);
+
+  if(!result.ok) return{total:0,errors:[result.error]};
+
+  /* Now sync server reviews to localStorage for display */
+  if(onProgress) onProgress('Syncing reviews to display...');
+  await syncReviewsFromServer();
+
+  /* Update last import timestamp */
+  cfg.lastImport=cfg.lastImport||{};
+  Object.keys(serverLocations).forEach(locId=>{
+    cfg.lastImport[locId]=cfg.lastImport[locId]||{};
+    Object.keys(serverLocations[locId]).forEach(platId=>{
+      cfg.lastImport[locId][platId]=new Date().toISOString();
+    });
+  });
   saveReviewConfig(cfg);
-  return results;
+
+  /* Also save sources to server */
+  try{apiFetch('/api/account/sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({locations:serverLocations,googleApiKey:cfg.googleApiKey||'',locationNames})}).catch(()=>{})}catch(e){}
+
+  return{total:result.total||0,errors:result.errors?result.errors.map(e=>e.location+'/'+e.platform+': '+e.error):[],details:result.details||[]};
 }
 
 const DEFAULT_ACTIONS=[
@@ -1412,7 +1454,8 @@ function MysteryShopperPage({mysteryCats}){
 function IntegrationsPage({onNavigate,onPasteExtract}){
   const cfg=getReviewConfig();
   const locs=cfg.locations||{};
-  const hasProxy=!!cfg.proxyUrl;
+  const session=loadSession();
+  const hasServer=!!(session&&session.email);
   const [manualModal,setManualModal]=useState(null);
   const [manualText,setManualText]=useState('');
   const [manualLoc,setManualLoc]=useState(LOCATIONS[0]?.id||'');
@@ -1422,7 +1465,7 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
 
   const platformStatus=(platformId)=>{
     const configuredLocs=LOCATIONS.filter(l=>(locs[l.id]||{})[platformId]);
-    if(!hasProxy) return {status:'disconnected',label:'Proxy Not Set',locCount:configuredLocs.length};
+    if(!hasServer) return {status:'disconnected',label:'Not Signed In',locCount:configuredLocs.length};
     if(configuredLocs.length===0) return {status:'disconnected',label:'Not Configured',locCount:0};
     return {status:'connected',label:configuredLocs.length+'/'+LOCATIONS.length+' locations',locCount:configuredLocs.length};
   };
@@ -1439,11 +1482,11 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
   };
 
   const ints=[
-    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your Google review page URL in Settings → Review Sources.',public:true},
-    {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your Trustpilot business URL in Settings → Review Sources.',public:true},
-    {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your TripAdvisor listing URL in Settings → Review Sources.',public:true},
+    {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',method:'auto',howTo:'Automatic — reviews are fetched server-side via Google Places API. Set up your Google Place ID in Settings → Review Sources.',public:true},
+    {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',method:'auto',howTo:'Automatic — reviews are fetched server-side. Set up your Trustpilot business URL in Settings → Review Sources.',public:true},
+    {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',method:'auto',howTo:'Automatic — reviews are fetched server-side. Set up your TripAdvisor listing URL in Settings → Review Sources.',public:true},
     {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',method:'paste',howTo:'Deliveroo requires login to see reviews. Use Paste & Extract: open your Deliveroo reviews page in another tab, select all (Ctrl+A), copy (Ctrl+C), then paste here.',public:false},
-    {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',method:'auto',howTo:'Automatic — reviews are fetched via your proxy. Set up your Just Eat restaurant URL in Settings → Review Sources.',public:true},
+    {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',method:'auto',howTo:'Automatic — reviews are fetched server-side. Set up your Just Eat restaurant URL in Settings → Review Sources.',public:true},
     {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',method:'manual',howTo:'For feedback received by email, phone, in-person, or your website contact form — add it manually using the button below.',public:true},
   ];
 
@@ -1456,7 +1499,7 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
     <div className="card" style={{marginBottom:16,display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:12}}>
       <div>
         <div className="text-sm font-bold">Import Engine</div>
-        <div className="text-xs text-muted">{hasProxy?<span style={{color:'var(--green)'}}>● Proxy connected</span>:<span style={{color:'var(--red)'}}>○ Proxy not configured</span>} · {totalImported} reviews imported</div>
+        <div className="text-xs text-muted">{hasServer?<span style={{color:'var(--green)'}}>● Server connected</span>:<span style={{color:'var(--red)'}}>○ Not signed in</span>} · {totalImported} reviews imported</div>
       </div>
       <button className="btn btn-sm btn-primary" onClick={()=>onNavigate&&onNavigate('settings')}>Configure in Settings</button>
     </div>
@@ -1638,22 +1681,15 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
 
     {/* ═══ REVIEW SOURCES TAB ═══ */}
     {settingsTab==='sources'&&<div>
-      {/* Proxy URL Setup */}
+      {/* Server-Side Review Fetching */}
       <div className="card" style={{marginBottom:16}}>
         <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>
-          <div style={{width:40,height:40,borderRadius:'var(--r-sm)',background:'var(--red-soft)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-            <span style={{fontSize:18}}>🔗</span>
+          <div style={{width:40,height:40,borderRadius:'var(--r-sm)',background:'var(--green-soft)',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <span style={{fontSize:18}}>☁️</span>
           </div>
           <div style={{flex:1}}>
-            <h3 style={{fontSize:15,fontWeight:700,marginBottom:2}}>Review Import Proxy</h3>
-            <div className="text-xs text-muted" style={{lineHeight:1.6}}>Deploy a free Google Apps Script to fetch reviews without CORS issues. This runs on Google's servers and acts as a bridge between this app and review platforms.</div>
-          </div>
-        </div>
-        <div style={{marginBottom:12}}>
-          <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Proxy URL</label>
-          <div className="flex gap-2" style={{flexWrap:'wrap'}}>
-            <input className="filter-input" value={reviewCfg.proxyUrl||''} onChange={e=>{const c={...reviewCfg,proxyUrl:e.target.value};setReviewCfg(c);saveReviewConfig(c)}} placeholder="https://script.google.com/macros/s/.../exec" style={{flex:1,maxWidth:'none',minWidth:200}}/>
-            <button className="btn btn-sm btn-secondary" onClick={()=>{window.open('https://script.google.com/home','_blank')}}>Open Apps Script</button>
+            <h3 style={{fontSize:15,fontWeight:700,marginBottom:2}}>Server-Side Review Engine</h3>
+            <div className="text-xs text-muted" style={{lineHeight:1.6}}>Reviews are fetched directly by the Feedback Hub server from Google, Trustpilot, and TripAdvisor. Just configure your platform URLs below and click "Import Now".</div>
           </div>
         </div>
         <div style={{marginBottom:12}}>
@@ -1661,254 +1697,13 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
           <input className="filter-input" value={reviewCfg.googleApiKey||''} onChange={e=>{const c={...reviewCfg,googleApiKey:e.target.value};setReviewCfg(c);saveReviewConfig(c)}} placeholder="AIza..." style={{maxWidth:'none',width:'100%'}}/>
         </div>
         <details style={{background:'var(--surface2)',borderRadius:'var(--r-sm)',padding:12}}>
-          <summary className="text-xs font-bold" style={{cursor:'pointer',color:'var(--blue)'}}>How to deploy the proxy (2 minutes)</summary>
-          <ol className="text-xs text-muted" style={{paddingLeft:18,marginTop:8,lineHeight:2}}>
-            <li>Go to <a href="https://script.google.com/home" target="_blank" style={{color:'var(--blue)',textDecoration:'underline'}}>script.google.com</a> and click <strong>New Project</strong></li>
-            <li>Delete any existing code and paste the proxy script (click "Copy Script" below)</li>
-            <li>Click <strong>Deploy → New Deployment</strong></li>
-            <li>Select <strong>Web app</strong>, set access to <strong>"Anyone"</strong></li>
-            <li>Click <strong>Deploy</strong> and copy the URL</li>
-            <li>Paste the URL in the Proxy URL field above</li>
-          </ol>
-          <button className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={()=>{
-            const script=`// Feedback Hub Review Proxy — Google Apps Script
-// Deploy as Web App with access: "Anyone"
-
-function doGet(e) {
-  var p = e.parameter;
-  var platform = p.platform || '';
-  var url = p.url || '';
-  var apiKey = p.apiKey || '';
-  var since = p.since || '';
-
-  try {
-    var reviews = [];
-
-    if (platform === 'google') {
-      reviews = fetchGoogleReviews(url, apiKey);
-    } else if (platform === 'trustpilot') {
-      reviews = fetchTrustpilotReviews(url);
-    } else if (platform === 'tripadvisor') {
-      reviews = fetchTripAdvisorReviews(url);
-    } else if (platform === 'deliveroo') {
-      reviews = fetchDeliverooReviews(url);
-    } else if (platform === 'justeat') {
-      reviews = fetchJustEatReviews(url);
-    } else {
-      return jsonResp({error: 'Unknown platform: ' + platform});
-    }
-
-    // Filter by date if since is provided
-    if (since) {
-      var sinceDate = new Date(since);
-      reviews = reviews.filter(function(r) {
-        return new Date(r.date) > sinceDate;
-      });
-    }
-
-    return jsonResp({reviews: reviews, count: reviews.length});
-  } catch(err) {
-    return jsonResp({error: err.message});
-  }
-}
-
-function jsonResp(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function fetchGoogleReviews(placeId, apiKey) {
-  if (!apiKey) {
-    // Fallback: scrape from Google Maps (limited)
-    var url = 'https://www.google.com/maps/place/?q=place_id:' + placeId;
-    var html = UrlFetchApp.fetch(url, {muteHttpExceptions: true}).getContentText();
-    return parseGoogleHTML(html);
-  }
-  // Use Places API
-  var apiUrl = 'https://maps.googleapis.com/maps/api/place/details/json?place_id=' + placeId + '&fields=reviews&key=' + apiKey;
-  var resp = UrlFetchApp.fetch(apiUrl, {muteHttpExceptions: true});
-  var data = JSON.parse(resp.getContentText());
-  if (data.result && data.result.reviews) {
-    return data.result.reviews.map(function(r) {
-      return {
-        date: new Date(r.time * 1000).toISOString().split('T')[0],
-        rating: r.rating,
-        author: r.author_name,
-        text: r.text,
-        source: 'Google'
-      };
-    });
-  }
-  return [];
-}
-
-function parseGoogleHTML(html) {
-  // Basic extraction from Google Maps HTML — handles common review patterns
-  var reviews = [];
-  try {
-    var blocks = html.split(/class="[^"]*review[^"]*"/gi);
-    // Google Maps HTML is heavily obfuscated; this is best-effort
-    // For reliable results, use the Places API with an API key
-  } catch(e) {}
-  return reviews;
-}
-
-function fetchTrustpilotReviews(businessUrl) {
-  var reviews = [];
-  // Trustpilot has structured data in their pages
-  for (var page = 1; page <= 3; page++) {
-    var url = businessUrl + (page > 1 ? '?page=' + page : '');
-    var html = UrlFetchApp.fetch(url, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-    // Extract JSON-LD structured data
-    var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-    ldMatches.forEach(function(m) {
-      try {
-        var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-        var data = JSON.parse(json);
-        if (data['@type'] === 'LocalBusiness' && data.review) {
-          (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-            reviews.push({
-              date: r.datePublished || '',
-              rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-              author: r.author ? r.author.name : 'Anonymous',
-              text: r.reviewBody || '',
-              source: 'Trustpilot'
-            });
-          });
-        }
-      } catch(e) {}
-    });
-
-    // Also try parsing review cards from HTML
-    var reviewBlocks = html.split(/data-review-id/gi);
-    if (reviewBlocks.length <= 1 && reviews.length === 0) {
-      // Try alternate pattern
-      var stars = html.match(/data-service-review-rating="(\\\\d)"/gi) || [];
-      var texts = html.match(/data-service-review-text-typography[^>]*>([^<]+)</gi) || [];
-      var dates = html.match(/datetime="([^"]+)"/gi) || [];
-      var names = html.match(/data-consumer-name-typography[^>]*>([^<]+)</gi) || [];
-    }
-  }
-  return reviews;
-}
-
-function fetchTripAdvisorReviews(listingUrl) {
-  var reviews = [];
-  var html = UrlFetchApp.fetch(listingUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-  // TripAdvisor uses JSON-LD and structured review data
-  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-  ldMatches.forEach(function(m) {
-    try {
-      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-      var data = JSON.parse(json);
-      if (data.review) {
-        (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-          reviews.push({
-            date: r.datePublished || '',
-            rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-            author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
-            text: r.reviewBody || r.name || '',
-            source: 'TripAdvisor'
-          });
-        });
-      }
-    } catch(e) {}
-  });
-  return reviews;
-}
-
-function fetchDeliverooReviews(restaurantUrl) {
-  var reviews = [];
-  try {
-    var html = UrlFetchApp.fetch(restaurantUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-    // Deliveroo embeds restaurant data as JSON in script tags
-    var jsonMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-    jsonMatches.forEach(function(m) {
-      try {
-        var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-        var data = JSON.parse(json);
-        if (data.review) {
-          (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-            reviews.push({
-              date: r.datePublished || '',
-              rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-              author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
-              text: r.reviewBody || r.description || '',
-              source: 'Deliveroo'
-            });
-          });
-        }
-        // Also check aggregateRating
-        if (data.aggregateRating && !reviews.length) {
-          // No individual reviews in JSON-LD, try parsing page
-        }
-      } catch(e) {}
-    });
-
-    // Deliveroo often puts review data in __NEXT_DATA__ or similar hydration scripts
-    if (reviews.length === 0) {
-      var nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\\\\s\\\\S]*?)<\\/script>/i);
-      if (nextDataMatch) {
-        try {
-          var nextData = JSON.parse(nextDataMatch[1]);
-          // Navigate the Next.js data structure to find reviews
-          var props = nextData.props && nextData.props.pageProps;
-          if (props) {
-            var menuPage = props.restaurant || props.menu || props;
-            var reviewList = menuPage.reviews || menuPage.ratings || [];
-            if (Array.isArray(reviewList)) {
-              reviewList.forEach(function(r) {
-                reviews.push({
-                  date: r.createdAt || r.date || '',
-                  rating: r.rating || r.score || 5,
-                  author: r.userName || r.author || 'Deliveroo Customer',
-                  text: r.text || r.comment || r.body || '',
-                  source: 'Deliveroo'
-                });
-              });
-            }
-          }
-        } catch(e) {}
-      }
-    }
-  } catch(e) {
-    // Deliveroo may block scraping — return empty rather than error
-  }
-  return reviews;
-}
-
-function fetchJustEatReviews(restaurantUrl) {
-  var reviews = [];
-  var html = UrlFetchApp.fetch(restaurantUrl, {muteHttpExceptions: true, followRedirects: true}).getContentText();
-
-  // Just Eat embeds review data in the page
-  var ldMatches = html.match(/<script type="application\\/ld\\+json">[\\\\s\\\\S]*?<\\/script>/gi) || [];
-  ldMatches.forEach(function(m) {
-    try {
-      var json = m.replace(/<script[^>]*>/i,'').replace(/<\\/script>/i,'').trim();
-      var data = JSON.parse(json);
-      if (data.review) {
-        (Array.isArray(data.review) ? data.review : [data.review]).forEach(function(r) {
-          reviews.push({
-            date: r.datePublished || '',
-            rating: r.reviewRating ? r.reviewRating.ratingValue : 5,
-            author: r.author ? (r.author.name || 'Anonymous') : 'Anonymous',
-            text: r.reviewBody || '',
-            source: 'Just Eat'
-          });
-        });
-      }
-    } catch(e) {}
-  });
-  return reviews;
-}`;
-            navigator.clipboard.writeText(script).then(()=>setToast('Proxy script copied to clipboard!')).catch(()=>{
-              const ta=document.createElement('textarea');ta.value=script;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);setToast('Proxy script copied!');
-            });
-          }}>📋 Copy Proxy Script</button>
+          <summary className="text-xs font-bold" style={{cursor:'pointer',color:'var(--blue)'}}>Supported platforms</summary>
+          <ul className="text-xs text-muted" style={{paddingLeft:18,marginTop:8,lineHeight:2}}>
+            <li><strong>Google Reviews</strong> — Uses Places API if key provided, otherwise scrapes public data</li>
+            <li><strong>Trustpilot</strong> — Scrapes business page reviews (up to 30)</li>
+            <li><strong>TripAdvisor</strong> — Scrapes listing page reviews</li>
+            <li><strong>Email forwarding</strong> — Forward customer emails to the review inbox</li>
+          </ul>
         </details>
       </div>
 
@@ -1921,7 +1716,9 @@ function fetchJustEatReviews(restaurantUrl) {
         </div>
         <div className="flex gap-2">
           <button className={'btn btn-primary'+(importing?' btn-disabled':'')} disabled={importing} onClick={async()=>{
-            if(!reviewCfg.proxyUrl){setToast('Please set up the proxy URL first');return}
+            const session=loadSession();
+            if(!session||!session.email){setToast('Please sign in first');return}
+
             setImporting(true);setImportStatus('Starting import...');setImportResults(null);
             try{
               const result=await runFullImport((msg)=>setImportStatus(msg));
@@ -1929,12 +1726,12 @@ function fetchJustEatReviews(restaurantUrl) {
               if(result.total>0){
                 if(onImportComplete) onImportComplete();
                 setToast('Imported '+result.total+' new reviews!');
-              }else if(result.errors.length>0){
+              }else if(result.errors&&result.errors.length>0){
                 setToast(result.errors.length+' error(s) during import — see details below');
               }else{
                 setToast('No new reviews found');
               }
-            }catch(e){setToast('Import failed: '+e.message);setImportResults({total:0,errors:[e.message],details:{}})}
+            }catch(e){setToast('Import failed: '+e.message);setImportResults({total:0,errors:[e.message],details:[]})}
             setImporting(false);setImportStatus('');
           }}>{importing?<span style={{display:'inline-block',width:14,height:14,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 1s linear infinite'}}/>:'🔄'} {importing?'Importing...':'Import Now'}</button>
           <button className="btn btn-secondary btn-sm" onClick={()=>{
@@ -2214,7 +2011,7 @@ function App(){
     if(hasAutoImported.current) return;
     hasAutoImported.current=true;
     const cfg=getReviewConfig();
-    if(!cfg.proxyUrl) return;
+    const sess=loadSession(); if(!sess||!sess.email) return;
     /* Check if last auto-import was less than 1 hour ago */
     const lastAuto=cfg.lastAutoImport||0;
     if(Date.now()-lastAuto<3600000) return;
