@@ -1465,6 +1465,14 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
   const [manualType,setManualType]=useState('complaint');
   const [manualSource,setManualSource]=useState('Email');
   const [toast,setToast]=useState('');
+  const [browseLoc,setBrowseLoc]=useState(LOCATIONS[0]?.id||'');
+
+  const getLastScan=(platformId)=>{
+    try{const d=JSON.parse(localStorage.getItem('fhub_last_scan')||'{}');return d[platformId]||null}catch(e){return null}
+  };
+  const setLastScan=(platformId,date)=>{
+    try{const d=JSON.parse(localStorage.getItem('fhub_last_scan')||'{}');d[platformId]=date;localStorage.setItem('fhub_last_scan',JSON.stringify(d))}catch(e){}
+  };
 
   const platformStatus=(platformId)=>{
     const configuredLocs=LOCATIONS.filter(l=>(locs[l.id]||{})[platformId]);
@@ -1488,9 +1496,10 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
     {id:'google',name:'Google Reviews',icon:'G',color:'#4285f4',bg:'#e8f0fe',method:'auto',howTo:'Automatic — reviews are fetched server-side via Google Places API. Set up your Google Place ID in Settings → Review Sources.',public:true},
     {id:'trustpilot',name:'Trustpilot',icon:'T',color:'#00b67a',bg:'#e0f5ed',method:'auto',howTo:'Automatic — reviews are fetched server-side. Set up your Trustpilot business URL in Settings → Review Sources.',public:true},
     {id:'tripadvisor',name:'TripAdvisor',icon:'TA',color:'#34e0a1',bg:'#e3faf0',method:'auto',howTo:'Automatic — reviews are fetched server-side. Set up your TripAdvisor listing URL in Settings → Review Sources.',public:true},
-    {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',method:'paste',howTo:'Deliveroo requires login to see reviews. Use Paste & Extract: open your Deliveroo reviews page in another tab, select all (Ctrl+A), copy (Ctrl+C), then paste here.',public:false},
+    {id:'deliveroo',name:'Deliveroo',icon:'D',color:'#00ccbc',bg:'#e0faf6',method:'browse',howTo:'Deliveroo requires login to view reviews. Click "Open Reviews Page" to navigate to your Deliveroo store\'s reviews & refunds page, then click "Scan Reviews" to let the AI extract them.',public:false,
+      getUrl:(locId)=>{const u=(locs[locId]||{}).deliveroo;return u||null}},
     {id:'justeat',name:'Just Eat',icon:'J',color:'#f36d00',bg:'#fef0e5',method:'auto',howTo:'Automatic — reviews are fetched server-side. Set up your Just Eat restaurant URL in Settings → Review Sources.',public:true},
-    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',method:'manual',howTo:'For feedback received by email, phone, in-person, or your website contact form — add it manually using the button below.',public:true},
+    {id:'email',name:'Email / Website',icon:'@',color:'#8b5cf6',bg:'#f3effe',method:'browse',howTo:'For feedback received by email, phone, in-person, or your website — click "Open Inbox" to navigate to your feedback email, then click "Scan" to let the AI extract reviews from recent messages.',public:true},
   ];
 
   const imported=getImportedReviews();
@@ -1512,7 +1521,7 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
       return <div key={i.id} className="int-card">
         <div className="int-icon" style={{background:i.bg,color:i.color,fontSize:i.icon.length>1?14:20,fontWeight:800}}>{i.icon}</div>
         <div className="int-body">
-          <div className="int-name">{i.name} <span className="badge" style={{fontSize:9,padding:'1px 6px',marginLeft:6,background:i.method==='auto'?'var(--green-soft)':i.method==='paste'?'var(--amber-soft)':'var(--blue-soft)',color:i.method==='auto'?'var(--green)':i.method==='paste'?'var(--amber)':'var(--blue)'}}>{i.method==='auto'?'Automatic':i.method==='paste'?'Paste & Extract':'Manual Entry'}</span></div>
+          <div className="int-name">{i.name} <span className="badge" style={{fontSize:9,padding:'1px 6px',marginLeft:6,background:i.method==='auto'?'var(--green-soft)':i.method==='browse'?'var(--amber-soft)':i.method==='paste'?'var(--amber-soft)':'var(--blue-soft)',color:i.method==='auto'?'var(--green)':i.method==='browse'?'var(--amber)':i.method==='paste'?'var(--amber)':'var(--blue)'}}>{i.method==='auto'?'Automatic':i.method==='browse'?'Scan & Import':i.method==='paste'?'Paste & Extract':'Manual Entry'}</span></div>
           <div className="int-desc" style={{marginBottom:6}}>{i.howTo}</div>
           <div className="flex items-center gap-2" style={{flexWrap:'wrap'}}>
             <span className={`int-status ${st.status==='connected'?'int-connected':'int-disconnected'}`}>
@@ -1524,6 +1533,32 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
             }}>📋 Open Paste & Extract</button>}
             {i.method==='manual'&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>setManualModal(true)}>✏️ Add Review Manually</button>}
             {i.method==='auto'&&st.status==='disconnected'&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>onNavigate&&onNavigate('settings')}>Set Up</button>}
+            {i.method==='browse'&&(()=>{
+              const lastScan=getLastScan(i.id);
+              const btnLabel=i.id==='deliveroo'?'🔗 Open Reviews Page':i.id==='email'?'📧 Open Inbox':'🔗 Open';
+              const scanLabel=i.id==='deliveroo'?'📥 Scan Reviews':i.id==='email'?'📥 Scan Inbox':'📥 Scan';
+              return <React.Fragment>
+                {i.id==='deliveroo'&&<React.Fragment>
+                  <select className="filter-select" style={{fontSize:11,padding:'4px 8px',minWidth:120}} value={browseLoc} onChange={e=>setBrowseLoc(e.target.value)}>
+                    {LOCATIONS.map(l=><option key={l.id} value={l.id}>{l.name}</option>)}
+                  </select>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>{
+                    const url=i.getUrl&&i.getUrl(browseLoc);
+                    if(url){window.open(url,'_blank')}
+                    else{setToast('No Deliveroo URL configured for this location. Set it in Settings → Review Sources.')}
+                  }}>{btnLabel}</button>
+                </React.Fragment>}
+                {i.id==='email'&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>{
+                  const emailUrl=cfg.emailInboxUrl||'https://mail.google.com';
+                  window.open(emailUrl,'_blank');
+                }}>{btnLabel}</button>}
+                <button className="btn btn-sm btn-primary" style={{fontSize:11,padding:'4px 12px'}} onClick={()=>{
+                  setToast('Scan feature coming soon — reviews were last extracted via AI assistant.');
+                  setLastScan(i.id,new Date().toISOString());
+                }}>{scanLabel}</button>
+                {lastScan&&<span className="text-xs text-muted" style={{marginLeft:4}}>Last scan: {new Date(lastScan).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</span>}
+              </React.Fragment>;
+            })()}
           </div>
         </div>
       </div>;
