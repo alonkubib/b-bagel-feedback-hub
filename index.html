@@ -626,9 +626,7 @@ async function fetchReviewsViaServer(locations, googleApiKey, locationNames){
   const session=loadSession();
   if(!session||!session.email) return {ok:false,error:'Not logged in'};
   try{
-    const resp=await apiFetch('/api/fetch-reviews',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({locations,googleApiKey:googleApiKey||'',locationNames:locationNames||{}})});
-    if(!resp.ok){const e=await resp.json().catch(()=>({}));return {ok:false,error:e.error||'Server returned '+resp.status}}
-    const data=await resp.json();
+    const data=await apiFetch('/api/fetch-reviews',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({locations,googleApiKey:googleApiKey||'',locationNames:locationNames||{}})});
     return {ok:true,...data};
   }catch(e){
     return {ok:false,error:e.message};
@@ -640,9 +638,7 @@ async function syncReviewsFromServer(){
   const session=loadSession();
   if(!session||!session.email) return;
   try{
-    const resp=await apiFetch('/api/reviews?limit=5000');
-    if(!resp.ok) return;
-    const data=await resp.json();
+    const data=await apiFetch('/api/reviews?limit=5000');
     const existing=getImportedReviews();
     const allFingerprints=new Set();
     const embeddedComps=typeof COMPLIMENT_DATA!=='undefined'?COMPLIMENT_DATA:[];
