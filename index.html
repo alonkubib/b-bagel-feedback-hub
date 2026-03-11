@@ -1114,9 +1114,9 @@ function ReviewCard({item, type, enabledActions, actionStates, setActionStates, 
 /* ═══ DASHBOARD ═══ */
 function DashboardPage({complaints,compliments,onNavigate}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
-  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
-  const [timePeriod,setTimePeriod]=useState('lastweek');
+  const [dateFrom,setDateFrom]=useState(()=>daysAgo(30));
+  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [timePeriod,setTimePeriod]=useState('30d');
   const setTime=(key,from,to)=>{setTimePeriod(key);setDateFrom(from);setDateTo(to)};
   const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[complaints,dateFrom,dateTo]);
   const fk=useMemo(()=>compliments.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo}),[compliments,dateFrom,dateTo]);
@@ -1167,8 +1167,9 @@ function DashboardPage({complaints,compliments,onNavigate}){
 /* ═══ REVIEWS PAGE ═══ */
 function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActionStates,setToast,setEmailModal}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
-  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [dateFrom,setDateFrom]=useState(()=>daysAgo(30));
+  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [timePeriod,setTimePeriod]=useState('30d');
   const [location,setLocation]=useState('');
   const [type,setType]=useState('');
   const [source,setSource]=useState('');
@@ -1202,10 +1203,10 @@ function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActi
     <div>
       <div className="page-header"><h2>Reviews</h2><p>{fmt(dateFrom)} – {fmt(dateTo)} · {all.length} results</p></div>
       <div className="time-bar">
-        <button className={`time-chip active`} onClick={()=>{setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
-        <button className="time-chip" onClick={()=>{setDateFrom(daysAgo(30));setDateTo(new Date())}}>Last 30 Days</button>
-        <button className="time-chip" onClick={()=>{setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
-        <button className="time-chip" onClick={()=>setShowCal(true)} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
+        <button className={`time-chip ${timePeriod==='lastweek'?'active':''}`} onClick={()=>{setTimePeriod('lastweek');setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
+        <button className={`time-chip ${timePeriod==='30d'?'active':''}`} onClick={()=>{setTimePeriod('30d');setDateFrom(daysAgo(30));setDateTo(new Date())}}>Last 30 Days</button>
+        <button className={`time-chip ${timePeriod==='month'?'active':''}`} onClick={()=>{setTimePeriod('month');setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
+        <button className={`time-chip ${timePeriod==='custom'?'active':''}`} onClick={()=>{setTimePeriod('custom');setShowCal(true)}} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
       </div>
       {showCal&&<CalendarPicker onClose={()=>setShowCal(false)} onSelect={(s,e)=>{setDateFrom(s);setDateTo(new Date(e.getTime()+86399999))}} initStart={dateFrom} initEnd={dateTo}/>}
       <div className="filter-bar">
@@ -1230,8 +1231,9 @@ function ReviewsPage({complaints,compliments,enabledActions,actionStates,setActi
 /* ═══ REPORT PAGE ═══ */
 function ReportPage({complaints,compliments}){
   const [showCal,setShowCal]=useState(false);
-  const [dateFrom,setDateFrom]=useState(()=>lastWeekStart());
-  const [dateTo,setDateTo]=useState(()=>lastWeekEnd());
+  const [dateFrom,setDateFrom]=useState(()=>daysAgo(30));
+  const [dateTo,setDateTo]=useState(()=>new Date());
+  const [timePeriod,setTimePeriod]=useState('30d');
   const [location,setLocation]=useState('');
   const prevFrom=new Date(dateFrom.getTime()-(dateTo-dateFrom));const prevTo=new Date(dateFrom.getTime()-1);
   const fc=useMemo(()=>complaints.filter(c=>{const d=parseDate(c.date);return d&&d>=dateFrom&&d<=dateTo&&(!location||c.location===location)}),[complaints,dateFrom,dateTo,location]);
@@ -1266,10 +1268,11 @@ function ReportPage({complaints,compliments}){
     <div>
       <div className="page-header"><div className="flex items-center gap-2"><h2>Report</h2><InfoIcon text="Scores = % positive feedback. Actions tracked via email system."/></div><p>Performance overview & improvement insights</p></div>
       <div className="time-bar">
-        <button className="time-chip active" onClick={()=>{setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
-        <button className="time-chip" onClick={()=>{setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
-        <button className="time-chip" onClick={()=>{setDateFrom(startOfLastMonth());setDateTo(endOfLastMonth())}}>Last Month</button>
-        <button className="time-chip" onClick={()=>setShowCal(true)} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
+        <button className={`time-chip ${timePeriod==='lastweek'?'active':''}`} onClick={()=>{setTimePeriod('lastweek');setDateFrom(lastWeekStart());setDateTo(lastWeekEnd())}}>Last Week</button>
+        <button className={`time-chip ${timePeriod==='30d'?'active':''}`} onClick={()=>{setTimePeriod('30d');setDateFrom(daysAgo(30));setDateTo(new Date())}}>Last 30 Days</button>
+        <button className={`time-chip ${timePeriod==='month'?'active':''}`} onClick={()=>{setTimePeriod('month');setDateFrom(startOfMonth());setDateTo(new Date())}}>This Month</button>
+        <button className={`time-chip ${timePeriod==='lastmonth'?'active':''}`} onClick={()=>{setTimePeriod('lastmonth');setDateFrom(startOfLastMonth());setDateTo(endOfLastMonth())}}>Last Month</button>
+        <button className={`time-chip ${timePeriod==='custom'?'active':''}`} onClick={()=>{setTimePeriod('custom');setShowCal(true)}} style={{display:'inline-flex',alignItems:'center',gap:6}}>{I.calendar} Custom</button>
       </div>
       <div style={{marginBottom:16}}><select className="filter-select" value={location} onChange={e=>setLocation(e.target.value)}><option value="">All Locations</option>{LOCATIONS.map(l=><option key={l.id} value={l.name}>{l.name}</option>)}</select></div>
       {showCal&&<CalendarPicker onClose={()=>setShowCal(false)} onSelect={(s,e)=>{setDateFrom(s);setDateTo(new Date(e.getTime()+86399999))}} initStart={dateFrom} initEnd={dateTo}/>}
