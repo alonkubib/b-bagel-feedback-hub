@@ -1466,12 +1466,13 @@ function IntegrationsPage({onNavigate,onPasteExtract}){
   const [manualSource,setManualSource]=useState('Email');
   const [toast,setToast]=useState('');
   const [browseLoc,setBrowseLoc]=useState(LOCATIONS[0]?.id||'');
+  const [scanDates,setScanDates]=useState(()=>{try{return JSON.parse(localStorage.getItem('fhub_last_scan')||'{}')}catch(e){return{}}});
 
-  const getLastScan=(platformId)=>{
-    try{const d=JSON.parse(localStorage.getItem('fhub_last_scan')||'{}');return d[platformId]||null}catch(e){return null}
-  };
+  const getLastScan=(platformId)=>scanDates[platformId]||null;
   const setLastScan=(platformId,date)=>{
-    try{const d=JSON.parse(localStorage.getItem('fhub_last_scan')||'{}');d[platformId]=date;localStorage.setItem('fhub_last_scan',JSON.stringify(d))}catch(e){}
+    const d={...scanDates,[platformId]:date};
+    setScanDates(d);
+    try{localStorage.setItem('fhub_last_scan',JSON.stringify(d))}catch(e){}
   };
 
   const platformStatus=(platformId)=>{
