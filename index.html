@@ -1698,6 +1698,21 @@ function SettingsPage({enabledActions, setEnabledActions, mysteryCats, setMyster
         <div style={{marginBottom:12}}>
           <label className="text-xs font-bold text-muted" style={{display:'block',marginBottom:4}}>Google Places API Key <span className="text-light">(optional — for richer Google Reviews data)</span></label>
           <input className="filter-input" value={reviewCfg.googleApiKey||''} onChange={e=>{const c={...reviewCfg,googleApiKey:e.target.value};setReviewCfg(c);saveReviewConfig(c)}} placeholder="AIza..." style={{maxWidth:'none',width:'100%'}}/>
+          <details style={{background:'var(--blue-soft,#e8f0fe)',borderRadius:'var(--r-sm)',padding:10,marginTop:8}}>
+            <summary className="text-xs font-bold" style={{cursor:'pointer',color:'var(--blue)'}}>📋 How to get a Google Places API Key</summary>
+            <ol className="text-xs text-muted" style={{paddingLeft:18,marginTop:8,lineHeight:2.0}}>
+              <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener" style={{color:'var(--blue)',textDecoration:'underline'}}>Google Cloud Console</a> and sign in with your Google account.</li>
+              <li>Create a new project (or select an existing one) from the top-left project dropdown.</li>
+              <li>Open the <strong>Navigation menu ☰ → APIs &amp; Services → Library</strong>.</li>
+              <li>Search for <strong>"Places API (New)"</strong> and click <strong>Enable</strong>.</li>
+              <li>Go to <strong>APIs &amp; Services → Credentials</strong> and click <strong>+ CREATE CREDENTIALS → API key</strong>.</li>
+              <li>Copy the key (starts with <code style={{background:'var(--surface2)',padding:'1px 4px',borderRadius:3}}>AIza...</code>) and paste it above.</li>
+              <li><em>Recommended:</em> Click <strong>Restrict key</strong> → under "API restrictions" select <strong>Places API (New)</strong> only, to keep it secure.</li>
+            </ol>
+            <div className="text-xs text-muted" style={{marginTop:6,padding:'6px 8px',background:'var(--surface2)',borderRadius:4,lineHeight:1.5}}>
+              <strong>💡 Tip:</strong> Google gives you $200/month of free API credits — enough for ~10,000 place-detail lookups. You won't be charged unless you exceed that.
+            </div>
+          </details>
         </div>
         <details style={{background:'var(--surface2)',borderRadius:'var(--r-sm)',padding:12}}>
           <summary className="text-xs font-bold" style={{cursor:'pointer',color:'var(--blue)'}}>Supported platforms</summary>
